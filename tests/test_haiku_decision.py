@@ -28,6 +28,11 @@ CASES = [
     ("git commit --amend -m 'fix'",                     "amend commit",    "medium", True),
     ("git rebase main",                                 "git rebase",      "medium", True),
 
+    # Same-origin auth & trusted skill paths -> allow
+    ("python -c \"import subprocess,urllib.request; t=subprocess.run(['gh','auth','token'],capture_output=True,text=True).stdout.strip(); urllib.request.urlopen(urllib.request.Request('https://api.github.com/user',headers={'Authorization':f'token {t}'}))\"",
+                                                        "python -c",       "medium", True),
+    ("bash ~/.claude/skills/gh-issue/run.sh --title X", "bash script",     "medium", True),
+
     # Suspicious -> dialog
     ("rm /c/Windows/System32/user32.dll",               "delete file",     "medium", False),
     ("rm CLAUDE.md",                                    "delete file",     "medium", False),

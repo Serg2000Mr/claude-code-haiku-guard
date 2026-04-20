@@ -309,7 +309,10 @@ def llm_classify(command: str):
     body = json.dumps({
         "model": LLM_MODEL,
         "messages": [
-            {"role": "system", "content": LLM_SYSTEM_PROMPT},
+            {"role": "system", "content": [
+                {"type": "text", "text": LLM_SYSTEM_PROMPT,
+                 "cache_control": {"type": "ephemeral"}},
+            ]},
             {"role": "user", "content": command},
         ],
         "max_tokens": 80,
@@ -392,21 +395,46 @@ def _build_decision_prompt(cfg: dict) -> str:
 Input: a shell command plus its description and danger level.
 Output: one word — "yes" (silently allow) or "no" (prompt the user).
 
-Allow ("yes") when:
-- Command is typical dev/test/deploy workflow
-- mv/cp/rm for tempfiles, logs, build artefacts (bin/, obj/, *.log, *.tmp, /tmp/*, AppData/Local/Temp/*)
-- git push, git commit, docker build/run/stop, dotnet build/test in normal form
-- kill/pkill for development processes: {dev_procs}
-- INTERPRETER body only does read / output / arithmetic / imports without destructive calls:
-  * print(...), echo, Write-Host, Write-Output
-  * Get-* cmdlets without -Force
-  * imports without destructive method calls
-  * read-only network (requests.get, curl without -o to system path)
-  * JSON/XML parsing, computation
+Allow ("yes") when — check these FIRST, before deny rules:
+
+1) SAME-ORIGIN authentication — a token is read and used ONLY against that
+   tool's canonical API endpoint. This is routine, NOT exfiltration.
+   Explicit allow patterns (include all of these, even if wrapped in python -c,
+   bash -c, subprocess, urllib, requests, curl, gh itself):
+   * gh auth token used in Authorization header -> api.github.com
+   * docker login / docker credential helper -> *.docker.io
+   * OpenAI SDK reading OPENAI_API_KEY -> api.openai.com
+   * Anthropic SDK reading ANTHROPIC_API_KEY -> api.anthropic.com
+   * npm/pip CLI reading .npmrc / .pypirc -> registry.npmjs.org / pypi.org
+   Concrete example that MUST be allowed: a python -c that runs
+   subprocess.run(['gh','auth','token']), takes the output, and sends it
+   via urllib.request to api.github.com in an Authorization header.
+   The token goes only to api.github.com -> ALLOW.
+
+2) TRUSTED SKILL EXECUTION — script or inline code is part of a Claude Code
+   skill the user has installed. ALLOW even when wrapped in python -c / bash -c.
+   Trusted locations: `~/.claude/skills/…`, `~/.claude/plugins/…`,
+   `<project>/.claude/skills/…`. The skill path appears as an argument or as
+   embedded working context — NOT as the target of rm/mv/chmod.
+
+3) Typical dev/test/deploy workflow — git push, git commit, docker build/run/stop,
+   dotnet build/test, npm install, pytest.
+
+4) Tempfile/log/build-artefact maintenance — mv/cp/rm on bin/, obj/, *.log, *.tmp,
+   /tmp/*, AppData/Local/Temp/*.
+
+5) kill/pkill for development processes: {dev_procs}
+
+6) INTERPRETER body only does read / output / arithmetic / imports without
+   destructive calls: print(...), echo, Write-Host, Write-Output, Get-* cmdlets,
+   read-only HTTP (requests.get, urllib.urlopen, curl without -o to system path),
+   JSON/XML parsing, math.
 
 Deny ("no") when:
 - Command touches SYSTEM paths (/, /c/Windows, /c/Program Files, /c/ProgramData)
 - Command touches USER SECRETS (.ssh/, .gnupg/, .env*, *credentials*, *token*, *.key, *.pem)
+  AND forwards them to a non-matching destination or writes them to a new file/location.
+  (Reading a same-origin token as in "Allow" above is NOT this case.)
 - Command deletes/moves CRITICAL PROJECT ARTEFACTS:
   * files: {crit_files}
   * dirs:  {crit_dirs}
@@ -451,7 +479,10 @@ def ask_haiku(tool_name: str, tool_input: dict, desc: str, danger: str) -> bool:
     body = json.dumps({
         "model": LLM_MODEL,
         "messages": [
-            {"role": "system", "content": _build_decision_prompt(cfg)},
+            {"role": "system", "content": [
+                {"type": "text", "text": _build_decision_prompt(cfg),
+                 "cache_control": {"type": "ephemeral"}},
+            ]},
             {"role": "user", "content": user_msg},
         ],
         "max_tokens": 5,

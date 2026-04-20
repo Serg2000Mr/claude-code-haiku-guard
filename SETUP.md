@@ -148,9 +148,62 @@ The Haiku decision prompt will refuse to silently delete/move anything matching 
 
 **"fatal: not a git repository" during classification.** The hook calls `os.getcwd()`; if Claude Code runs it in a dir without a `.git`, that's fine for the hook but logs may look confused. Irrelevant to correctness.
 
+## Choosing a model
+
+The default model is `anthropic/claude-haiku-4.5`. The guard is designed around its strengths: fast, cheap, strong at instruction-following, and trained on Anthropic's safety intuitions.
+
+### Alternative models
+
+You can swap in any OpenRouter-hosted model via `HAIKU_GUARD_MODEL`:
+
+```bash
+export HAIKU_GUARD_MODEL="mistralai/mistral-small-3"
+```
+
+**Candidates for the yes/no decision task** (not benchmarked yet — see disclaimer below):
+
+| Model | Price in / out ($/M) | Notes |
+|-------|----------------------|-------|
+| `anthropic/claude-haiku-4.5`       | $0.80 / $4.00 | Default. Best safety intuitions. |
+| `openai/gpt-4o-mini` / `gpt-5-mini` | ~ $0.15 / $0.60 | Strong instruction-following. |
+| `google/gemini-2.5-flash`          | ~ $0.30 / $2.50 | Very fast, big context. |
+| `mistralai/mistral-small-3`        | ~ $0.10 / $0.30 | Cheapest credible option. |
+| `deepseek/deepseek-v3.2-exp`       | ~ $0.30 / $1.20 | Strong reasoning on nuanced cases. |
+| `qwen/qwen3-next-80b-a3b-instruct` | ~ $0.15 / $1.50 | MoE, fast, broad training. |
+| `meta-llama/llama-3.3-70b-instruct`| ~ $0.50 / $0.50 | Stable, slightly weaker on edges. |
+
+### Disclaimer — no comparative testing yet
+
+This table lists **candidate** alternatives. As of this writing the guard has only been validated against `anthropic/claude-haiku-4.5`. Other models are plausible substitutes — especially for the bounded yes/no task — but may differ on:
+
+- false-positive rate on edge cases (e.g. `python -c` with mixed read/write)
+- prompt-injection resistance inside command bodies
+- consistency between runs
+
+If you switch, run `tests/test_haiku_decision.py` and `tests/test_interpreter_destructive.py` first to calibrate against your chosen model, and expect a few cases to flip — tune the prompt in `_build_decision_prompt()` if needed.
+
+Regional note: OpenRouter blocks OpenAI / Anthropic / Google models for some billing regions. If that happens, either change your billing region in OpenRouter settings, or pick one of the non-blocked models (Mistral, DeepSeek, Qwen, Llama).
+
 ## Cost estimation
 
-Each `medium`-level command triggers one Haiku call (~5 output tokens). OpenRouter lists Haiku 4.5 at roughly $0.80/M input + $4/M output. A heavy 8-hour coding day with ~200 medium-level commands costs ≈ $0.01–0.05.
+Each `medium`-level command triggers one Haiku call. Token breakdown per call:
+
+- system prompt (cached): ~600 tokens
+- user message (command + cwd + description): ~100 tokens
+- output: 1-5 tokens ("yes"/"no")
+
+**Prompt caching is enabled** — the system prompt is sent with
+`cache_control: {"type": "ephemeral"}`, so Anthropic caches it on their side
+with a 5-minute TTL. Back-to-back requests within the window pay ~10% of the
+system-prompt input cost instead of full price.
+
+Without caching: ~$0.0006 per call → ~$0.05 for 100 calls / day.
+With caching (typical active-session hit rate): ~2-5× cheaper.
+
+Heavy testing across all suites consumes several hundred calls in minutes —
+expect $0.30-0.50 per full-suite run. Normal dev work is an order of magnitude
+less. Cheaper substitute models (Mistral Small, Qwen) cut the floor by another
+5-10× if absolute cost matters more than model quality.
 
 ## Uninstall
 
