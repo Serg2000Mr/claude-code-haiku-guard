@@ -299,8 +299,6 @@ def rules_classify(command: str):
 
 def is_complex(command: str) -> bool:
     c = _strip_commit_message(command or "")
-    if len(c) > 160:
-        return True
     markers = ("$(", "`", "<<", "powershell -c", "powershell -command",
                "cmd /c", "bash -c", "-Command", "Add-Type", "Invoke-Expression")
     low = c.lower()
