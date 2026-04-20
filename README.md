@@ -15,6 +15,8 @@ Claude Code users who:
 
 Claude Code's default allow-list uses glob patterns. A rule like `Bash(echo *)` matches **any** command starting with `echo`, including `echo ok && rm -rf .git` — because `*` matches spaces, `&&`, and pipes. So every "safe-looking" wildcard in your allow-list is a potential bypass for destructive operations.
 
+**Yes, this really happens** — see [INCIDENTS.md](INCIDENTS.md) for a list of public reports where AI agents (Claude Code, Cursor, Codex) silently executed `rm -rf`, `git reset --hard`, and destructive PowerShell loops in real user projects.
+
 This hook replaces the allow-list with a **risk-based classifier**:
 
 | Risk | What happens |
