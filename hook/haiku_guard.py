@@ -257,10 +257,15 @@ def _has_write_redirect(command: str) -> bool:
     return bool(re.search(r'\s>>?\s+(?!/dev/null\b)\S', s))
 
 
+def _strip_commit_message(command: str) -> str:
+    """Remove heredoc body from git commit -m "$(cat <<'EOF'...EOF)" before analysis."""
+    return re.sub(r'\$\(cat\s+<<\'?EOF\'?.*?EOF\s*\)', '""', command, flags=re.DOTALL)
+
+
 def rules_classify(command: str):
     """Classify by rules, splitting compound commands on ; && || |.
     Returns (desc, danger) or (None, None) if any part is unknown."""
-    cmd = (command or "").strip()
+    cmd = _strip_commit_message((command or "").strip())
     if not cmd:
         return "empty", "none"
 
@@ -293,7 +298,7 @@ def rules_classify(command: str):
 
 
 def is_complex(command: str) -> bool:
-    c = command or ""
+    c = _strip_commit_message(command or "")
     if len(c) > 160:
         return True
     markers = ("$(", "`", "<<", "powershell -c", "powershell -command",
