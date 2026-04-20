@@ -462,17 +462,22 @@ Allow ("yes") when — check these FIRST, before deny rules:
 5) kill/pkill for development processes: {dev_procs}
 
 6) INTERPRETER body only does read / output / arithmetic / imports without
-   destructive calls: print(...), echo, Write-Host, Write-Output, Get-* cmdlets,
-   read-only HTTP (requests.get, urllib.urlopen, curl without -o to system path),
-   JSON/XML parsing, math.
+   destructive calls:
+   - print(...), echo, Write-Host, Write-Output
+   - Get-* cmdlets including Get-Content, Get-ChildItem, Get-Process (without -Force)
+   - Pipeline-only: Where-Object, Select-Object, Sort-Object, Measure-Object,
+     Group-Object, Format-Table, Format-List, Out-String, Out-Host
+   - ConvertFrom-Json, ConvertTo-Json, ConvertFrom-Csv and other Convert* cmdlets
+   - Variable assignment ($var = ...) when the right side is read-only
+   - Hash tables @{...} and script blocks {$_.prop} used with Select-Object/Where-Object
+   - read-only HTTP (requests.get, urllib.urlopen, curl without -o to system path)
+   - JSON/XML parsing, math
 
 Deny ("no") when:
 - Command touches SYSTEM paths (/, /c/Windows, /c/Program Files, /c/ProgramData)
 - Command touches USER SECRETS (.ssh/, .gnupg/, .env*, *credentials*, *token*, *.key, *.pem)
   AND forwards them to a non-matching destination or writes them to a new file/location.
   (Reading a same-origin token as in "Allow" above is NOT this case.)
-- Script is run from /tmp, AppData/Temp, or a downloaded/unfamiliar path (not inside
-  the working project directory)
 - Command deletes/moves CRITICAL PROJECT ARTEFACTS:
   * files: {crit_files}
   * dirs:  {crit_dirs}
