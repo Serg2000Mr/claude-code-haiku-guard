@@ -28,6 +28,7 @@ import re
 import hashlib
 import datetime
 import urllib.request
+import urllib.error
 
 
 # -----------------------------------------------------------------------------
@@ -44,6 +45,8 @@ LLM_TIMEOUT_SEC = int(os.environ.get("HAIKU_GUARD_TIMEOUT", "15"))
 CACHE_FILE = os.path.expanduser("~/.claude/hooks/haiku_cache.json")
 LOG_FILE = os.path.expanduser("~/.claude/hooks/haiku_log.jsonl")
 CONFIG_FILE = os.path.expanduser("~/.claude/hooks/haiku_guard.config.json")
+NOTIFY_LOCK = os.path.expanduser("~/.claude/hooks/haiku_notify.lock")
+_NOTIFY_COOLDOWN_SEC = 1800  # show at most once per 30 minutes
 
 DEFAULT_CONFIG = {
     # Files/dirs that must NEVER be silently mutated by the agent.
@@ -83,6 +86,37 @@ def log_event(event: dict) -> None:
         os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
         with open(LOG_FILE, "a", encoding="utf-8") as f:
             f.write(json.dumps(event, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
+# -----------------------------------------------------------------------------
+# Windows notification
+# -----------------------------------------------------------------------------
+
+def _notify(title: str, body: str) -> None:
+    """Show a Windows MessageBox. Rate-limited to once per 30 minutes.
+    No-op on non-Windows or when ctypes is unavailable."""
+    try:
+        now = datetime.datetime.now(datetime.timezone.utc).timestamp()
+        if os.path.exists(NOTIFY_LOCK):
+            try:
+                with open(NOTIFY_LOCK, "r", encoding="utf-8") as f:
+                    if now - json.load(f).get("ts", 0) < _NOTIFY_COOLDOWN_SEC:
+                        return
+            except Exception:
+                pass
+        os.makedirs(os.path.dirname(NOTIFY_LOCK), exist_ok=True)
+        with open(NOTIFY_LOCK, "w", encoding="utf-8") as f:
+            json.dump({"ts": now}, f)
+    except Exception:
+        pass
+    try:
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(
+            0, body, title,
+            0x40 | 0x1000,  # MB_ICONINFORMATION | MB_SYSTEMMODAL
+        )
     except Exception:
         pass
 
@@ -515,6 +549,13 @@ def ask_haiku(tool_name: str, tool_input: dict, desc: str, danger: str) -> bool:
     or_key = read_openrouter_key()
     if not or_key:
         log_event({"phase": "haiku_no_key_fail_closed", "desc": desc})
+        _notify(
+            "Haiku Guard — key not found",
+            "No OpenRouter key found.\n\n"
+            "Expected: ~/.openrouter_key  (one line: sk-or-...)\n"
+            "or env var: HAIKU_GUARD_OPENROUTER_KEY\n\n"
+            "Medium-risk commands will show a dialog until this is fixed.",
+        )
         return False
 
     cfg = _load_config()
@@ -538,6 +579,24 @@ def ask_haiku(tool_name: str, tool_input: dict, desc: str, danger: str) -> bool:
     try:
         resp = json.loads(urllib.request.urlopen(req, timeout=LLM_TIMEOUT_SEC).read())
         answer = (resp.get("choices") or [{}])[0].get("message", {}).get("content", "").strip().lower()
+    except urllib.error.HTTPError as e:
+        code = e.code
+        if code in (401, 403):
+            _notify(
+                "Haiku Guard — key rejected",
+                f"OpenRouter returned HTTP {code}.\n\n"
+                "Check your key in ~/.openrouter_key\n"
+                "or HAIKU_GUARD_OPENROUTER_KEY.",
+            )
+        elif code in (402, 429):
+            _notify(
+                "Haiku Guard — credits or rate limit",
+                f"OpenRouter returned HTTP {code}.\n\n"
+                "Your account may be out of credits or rate-limited.\n"
+                "Top up at: openrouter.ai/settings/credits",
+            )
+        log_event({"phase": "haiku_error_fail_closed", "error": f"HTTP {code}"})
+        return False
     except Exception as e:
         log_event({"phase": "haiku_error_fail_closed", "error": str(e)[:200]})
         return False

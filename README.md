@@ -16,7 +16,7 @@ Technically, this is a Claude Code hook that classifies the full Bash command by
 | `medium` | ask Haiku for a yes/no decision in context |
 | `high` / `critical` | always show a dialog |
 
-Public incident examples that motivated these defaults are collected in [INCIDENTS.md](INCIDENTS.md).
+Real-world cases where AI agents ran `rm -rf`, `git reset --hard`, and similar commands through over-broad allow-list rules are collected in [INCIDENTS.md](INCIDENTS.md).
 
 ## 🔍 How it decides
 
@@ -25,7 +25,7 @@ Public incident examples that motivated these defaults are collected in [INCIDEN
 3. Use Haiku for medium-risk or novel cases, with the command, current working directory, and optional project-specific config.
 4. Cache decisions by full command plus `cwd`.
 
-If the OpenRouter key is missing, the network fails, or the model call errors out, medium-risk commands fall back to a dialog instead of silent allow. High and critical commands never bypass the dialog.
+If the OpenRouter key is missing, the network fails, or the model call errors out, medium-risk commands fall back to a dialog instead of silent allow. On Windows a MessageBox is shown once to explain why. High and critical commands never bypass the dialog.
 
 ## 🚀 Quick start
 
