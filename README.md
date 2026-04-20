@@ -6,6 +6,8 @@ The idea in this repo is simple: keep rules for obviously safe commands, and use
 
 Technically, this is a Claude Code hook that classifies the full Bash command by risk. By default, the LLM step runs through OpenRouter.
 
+On current OpenRouter pricing this is usually a cents-per-day tool, not a dollars-per-day one. The rough math is in [SETUP.md](SETUP.md).
+
 > [Русская версия →](README.ru.md)
 
 ## ⚖️ What happens to a command
