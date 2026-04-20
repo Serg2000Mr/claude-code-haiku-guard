@@ -378,10 +378,7 @@ def llm_classify(command: str):
     body = json.dumps({
         "model": LLM_MODEL,
         "messages": [
-            {"role": "system", "content": [
-                {"type": "text", "text": LLM_SYSTEM_PROMPT,
-                 "cache_control": {"type": "ephemeral"}},
-            ]},
+            {"role": "system", "content": LLM_SYSTEM_PROMPT},
             {"role": "user", "content": command},
         ],
         "max_tokens": 80,
@@ -563,10 +560,7 @@ def ask_haiku(tool_name: str, tool_input: dict, desc: str, danger: str) -> bool:
     body = json.dumps({
         "model": LLM_MODEL,
         "messages": [
-            {"role": "system", "content": [
-                {"type": "text", "text": _build_decision_prompt(cfg),
-                 "cache_control": {"type": "ephemeral"}},
-            ]},
+            {"role": "system", "content": _build_decision_prompt(cfg)},
             {"role": "user", "content": user_msg},
         ],
         "max_tokens": 5,
