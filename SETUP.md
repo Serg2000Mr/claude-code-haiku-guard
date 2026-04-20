@@ -1,8 +1,8 @@
-# Setup
+# 🔧 Setup
 
 This guide gets the guard working first. Optional model tuning comes later.
 
-## 1. Create an OpenRouter key
+## 🔑 1. Create an OpenRouter key
 
 The guard calls OpenRouter, so an OpenAI or Anthropic key will not work here.
 
@@ -19,7 +19,7 @@ On Windows (Git Bash), `~` resolves to `C:\Users\<you>`.
 
 You can also set `HAIKU_GUARD_OPENROUTER_KEY` directly in Claude Code's `settings.json`.
 
-## 2. Install the hook file
+## 📦 2. Install the hook file
 
 ```bash
 mkdir -p ~/.claude/hooks
@@ -41,7 +41,7 @@ Expected output:
 
 If Python fails here, fix that first before wiring the hook into Claude Code.
 
-## 3. Add the hook to `settings.json`
+## ⚙️ 3. Add the hook to `settings.json`
 
 Merge the `hooks` block from [examples/settings.json](examples/settings.json) into `~/.claude/settings.json`:
 
@@ -68,7 +68,7 @@ Use a Bash-scoped `PreToolUse` hook for the main flow in this repo. The script a
 
 Even with `PreToolUse`, you should still remove broad Bash allow rules from both global and project settings. Otherwise Claude Code can approve commands so broadly that this guard stops being useful.
 
-## 4. Remove broad Bash allow rules
+## 🧹 4. Remove broad Bash allow rules
 
 Delete entries like these from `permissions.allow`:
 
@@ -89,12 +89,12 @@ Why this matters:
 
 Safe entries to keep are exact commands without wildcards, plus your deny list.
 
-## 5. Restart Claude Code
+## 🔄 5. Restart Claude Code
 
 - VS Code extension: `Ctrl+Shift+P` -> `Developer: Reload Window`
 - CLI: exit and start it again
 
-## 6. Smoke test
+## 🧪 6. Smoke test
 
 Start with the deterministic checks:
 
@@ -121,7 +121,7 @@ Log file:
 tail -20 ~/.claude/hooks/haiku_log.jsonl
 ```
 
-## 7. Optional: project-specific config
+## 🗂️ 7. Optional: project-specific config
 
 If your project has its own critical files or directories, create `~/.claude/hooks/haiku_guard.config.json`:
 
@@ -151,7 +151,7 @@ If your project has its own critical files or directories, create `~/.claude/hoo
 
 Missing fields fall back to `DEFAULT_CONFIG` in [hook/haiku_guard.py](hook/haiku_guard.py).
 
-## Troubleshooting
+## 🛠️ Troubleshooting
 
 **Everything shows a dialog.** The OpenRouter key is missing or unreadable. Check `~/.openrouter_key` or `HAIKU_GUARD_OPENROUTER_KEY`. Logs will usually show `haiku_no_key_fail_closed`.
 
@@ -159,7 +159,7 @@ Missing fields fall back to `DEFAULT_CONFIG` in [hook/haiku_guard.py](hook/haiku
 
 **The hook never seems to run.** The matcher is probably wrong. Use `"matcher": "Bash"`, not `"bash"`.
 
-## Optional: choose a different model
+## 🤖 Optional: choose a different model
 
 You can point the guard at another OpenRouter model:
 
@@ -169,6 +169,6 @@ export HAIKU_GUARD_MODEL="mistralai/mistral-small-3"
 
 Only `anthropic/claude-haiku-4.5` has been exercised so far. If you switch, rerun `tests/test_haiku_decision.py` and `tests/test_interpreter_destructive.py` and expect some edge cases to move.
 
-## Uninstall
+## 🧼 Uninstall
 
 Remove the `PreToolUse` hook entry from `settings.json`, delete `~/.claude/hooks/haiku_guard.py`, and optionally remove `~/.claude/hooks/haiku_cache.json` plus `~/.claude/hooks/haiku_log.jsonl`.
