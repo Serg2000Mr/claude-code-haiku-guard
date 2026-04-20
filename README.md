@@ -1,14 +1,14 @@
 # 🛡️ claude-code-haiku-guard
 
-A Bash permission guard for Claude Code that reduces routine permission prompts without relying on broad `Bash(*)` rules. It classifies each Bash command by risk, lets clearly safe commands through, and keeps suspicious or destructive commands visible.
+Anyone who uses Claude Code heavily eventually gets tired of approving harmless commands. Most people start by adding allow-list exceptions, and some end up switching on `--dangerously-skip-permissions`. The incident reports linked below are a good reminder of why that trade-off is risky.
+
+The idea in this repo is simple: keep rules for obviously safe commands, and use a small, fast model such as Haiku for the harder cases. In practice, that means most routine commands are approved automatically, while the user only sees the commands that look dangerous or unclear.
+
+Technically, this is a Claude Code hook that classifies the full Bash command by risk. By default, the LLM step runs through OpenRouter.
 
 > [Русская версия →](README.ru.md)
 
-## ⚠️ Why this exists
-
-Claude Code permission rules are glob-based. A rule like `Bash(echo *)` also matches `echo ok && rm -rf .git`, because `*` spans spaces and shell operators. That makes broad prefix rules convenient, but hard to trust.
-
-This repo takes a different approach. Instead of approving command prefixes, it classifies the full command and picks one of three behaviors:
+## ⚖️ What happens to a command
 
 | Risk | Behavior |
 |------|----------|
