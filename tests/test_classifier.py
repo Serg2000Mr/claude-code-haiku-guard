@@ -42,6 +42,10 @@ CASES = [
     ("git checkout main",               "low",  "git checkout branch"),
     ("curl https://example.com",        "low",  "network fetch"),
 
+    # Test scripts auto-allowed
+    ("python3 test_classifier.py",      "none",   "python3 test script"),
+    ("python test_foo.py",              "none",   "python test script"),
+
     # Script execution — bare scripts are medium (contents unknown)
     ("python myscript.py",              "medium", "bare python script"),
     ("python -m arbitrary_module",      "medium", "python -m module"),
@@ -56,7 +60,7 @@ CASES = [
     # Medium: single irreversible actions
     ("rm /tmp/file.txt",                "medium", "delete file"),
     ("mv file1.txt file2.txt",          "medium", "move/rename"),
-    ("git push origin main",            "medium", "git push"),
+    ("git push origin main",            "low",    "git push"),
     ("git checkout -- file.cs",         "medium", "git checkout -- file"),
     ("git checkout -- nonexistent.txt", "medium", "classify by pattern"),
     ("git commit --amend",              "medium", "amend"),

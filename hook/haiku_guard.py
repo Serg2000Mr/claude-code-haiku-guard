@@ -171,7 +171,7 @@ BASH_RULES = [
     (rf"{_CMD}(pkill|killall)\s+\S",          "high", "mass kill by name"),
     # medium: interpreter wrappers (captured as safety floor below)
     (rf"{_CMD}git\s+push\s+.*(--dry-run\b|\s-n\b)", "none", "git push --dry-run"),
-    (rf"{_CMD}git\s+push\b",                  "medium", "git push"),
+    (rf"{_CMD}git\s+push\b",                  "low",    "git push"),
     (rf"{_CMD}git\s+commit\s+--amend",        "medium", "git commit --amend"),
     (rf"{_CMD}git\s+rebase\b",                "medium", "git rebase"),
     (rf"{_CMD}git\s+checkout\s+--\s",         "medium", "git checkout -- file"),
@@ -198,6 +198,7 @@ BASH_RULES = [
     (rf"{_CMD}docker\s+compose\s+(up|start|restart|run)\b",    "low", "docker compose up"),
     # interpreters (also anchored by _segment_floor)
     (rf"{_CMD}(python|python3|py)\s+-m\s+pytest",     "none",   "run pytest"),
+    (rf"{_CMD}(python|python3|py)\s+test[\w_]*\.py\b","none",   "run test script"),
     (rf"{_CMD}(python|python3|py)\s+-c\b",            "medium", "python -c arbitrary code"),
     (rf"{_CMD}(python|python3|py)\s+-m\s+\w+",        "medium", "python -m module"),
     (rf"{_CMD}(python|python3|py)\b",                 "medium", "python script"),
@@ -336,7 +337,7 @@ CORE RULE: classify by the command SHAPE, not by whether the specific args make 
 Levels:
 - none     read/view/navigate/simulate (ls, cat, git status, git push --dry-run, docker ps, cd)
 - low      create / easy-rollback (npm install, git commit, mkdir, cp, touch)
-- medium   single irreversible action (rm file, mv, git push, git checkout -- file, docker stop, kill, chmod)
+- medium   single irreversible action (rm file, mv, git checkout -- file, docker stop, kill, chmod)
 - high     mass-data-loss risk (rm -rf, git push --force, git reset --hard, git restore, drop table)
 - critical system destruction (rm -rf /, mkfs, shutdown, dd of=/dev/*, fork bomb)
 
