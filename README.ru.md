@@ -87,10 +87,12 @@
 
 ```bash
 cd tests
-python test_classifier.py              # 41 кейс классификации
-python test_haiku_decision.py          # 18 кейсов решений
-python test_interpreter_destructive.py # 9 кейсов содержимого интерпретаторов
+python test_classifier.py              # 52 offline-кейса — ключ не нужен
+python test_haiku_decision.py          # 18 кейсов решений — нужен ключ
+python test_interpreter_destructive.py # 9 кейсов содержимого интерпретаторов — нужен ключ
 ```
+
+Два набора, требующие сети, при отсутствии ключа пропускаются без ошибки.
 
 ## Стоимость
 

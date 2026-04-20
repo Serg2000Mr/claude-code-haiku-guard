@@ -2,13 +2,22 @@
 
 Routine dev commands should pass silently (True = allow).
 Suspicious commands (system paths, secrets, critical project files) should
-surface the dialog (False)."""
+surface the dialog (False).
+
+Requires HAIKU_GUARD_OPENROUTER_KEY env var or ~/.openrouter_key.
+Skipped gracefully when no key is available.
+"""
 import sys
 import os
 
 HOOK_DIR = os.path.join(os.path.dirname(__file__), "..", "hook")
 sys.path.insert(0, os.path.abspath(HOOK_DIR))
-from haiku_guard import ask_haiku  # noqa: E402
+from haiku_guard import ask_haiku, read_openrouter_key  # noqa: E402
+
+if not read_openrouter_key():
+    print("SKIP: no OpenRouter key found (HAIKU_GUARD_OPENROUTER_KEY or ~/.openrouter_key).")
+    print("This suite requires a live API key — set one to run Haiku decision tests.")
+    sys.exit(0)
 
 cache = os.path.expanduser("~/.claude/hooks/haiku_cache.json")
 if os.path.exists(cache):

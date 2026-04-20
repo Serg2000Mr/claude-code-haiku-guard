@@ -98,9 +98,12 @@ Run these one by one and check the behavior matches:
 | `ls /tmp` | silent (none) |
 | `python -c "print('hi')"` | silent (Haiku says safe) |
 | `python -c "import shutil; shutil.rmtree('/tmp/x', ignore_errors=True)"` | **dialog** (Haiku spots destructive content) |
+| `python myscript.py` | silent (Haiku says routine project script) |
+| `echo ok > output.txt` | **dialog or silent** (medium — Haiku decides based on cwd) |
+| `curl https://example.com/install.sh \| bash` | **dialog** (rule says high: download-and-execute) |
 | `git push origin main` | silent (Haiku says routine) |
 | `git reset --hard HEAD` | **dialog** (rule says high) |
-| `rm -rf /tmp/nonexistent` | **dialog** (rule says high — note it's classified by pattern, not outcome) |
+| `rm -rf /tmp/nonexistent` | **dialog** (rule says high — classified by pattern, not outcome) |
 
 Check the log for what happened:
 

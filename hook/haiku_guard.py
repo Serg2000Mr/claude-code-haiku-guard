@@ -150,15 +150,27 @@ BASH_RULES = [
     (rf"{_CMD}(chmod|chown)\s+\S",            "medium", "change permissions"),
     (rf"{_CMD}gh\s+pr\s+merge\b",             "medium", "merge PR"),
     (rf"{_CMD}gh\s+repo\s+delete\b",          "critical", "delete repo"),
+    # low: create / easy-rollback
+    (rf"{_CMD}(npm|pip|pip3|pnpm|yarn)\s+install\b",       "low", "install package"),
+    (rf"{_CMD}dotnet\s+(build|restore|publish)\b",          "low", "dotnet build"),
+    (rf"{_CMD}git\s+commit\b",                             "low", "git commit"),
+    (rf"{_CMD}git\s+(add|stash)\b",                        "low", "git stage/stash"),
+    (rf"{_CMD}git\s+(pull|fetch)\b",                       "low", "git pull/fetch"),
+    (rf"{_CMD}git\s+(checkout|switch)\b",                  "low", "git checkout branch"),
+    (rf"{_CMD}mkdir\b",                                    "low", "create directory"),
+    (rf"{_CMD}cp\s+\S",                                    "low", "copy file"),
+    (rf"{_CMD}touch\b",                                    "low", "create file"),
+    (rf"{_CMD}docker\s+(run|build|pull|tag|exec|attach|cp)\b", "low", "docker run/build"),
+    (rf"{_CMD}docker\s+compose\s+(up|start|restart|run)\b",    "low", "docker compose up"),
     # interpreters (also anchored by _segment_floor)
     (rf"{_CMD}(python|python3|py)\s+-m\s+pytest",     "none",   "run pytest"),
     (rf"{_CMD}(python|python3|py)\s+-c\b",            "medium", "python -c arbitrary code"),
-    (rf"{_CMD}(python|python3|py)\s+-m\s+\w+",        "low",    "python -m module"),
-    (rf"{_CMD}(python|python3|py)\b",                 "low",    "python script"),
+    (rf"{_CMD}(python|python3|py)\s+-m\s+\w+",        "medium", "python -m module"),
+    (rf"{_CMD}(python|python3|py)\b",                 "medium", "python script"),
     (rf"{_CMD}node\s+-e\b",                           "medium", "node -e arbitrary code"),
-    (rf"{_CMD}node\b",                                "low",    "node script"),
+    (rf"{_CMD}node\b",                                "medium", "node script"),
     (rf"{_CMD}bash\s+-c\b",                           "medium", "bash -c arbitrary code"),
-    (rf"{_CMD}bash\s+",                               "low",    "bash script"),
+    (rf"{_CMD}bash\s+",                               "medium", "bash script"),
     (rf"{_CMD}(powershell|pwsh)(\.exe)?\s+.*-Command\b",
                                                       "medium", "PowerShell -Command arbitrary code"),
     (rf"{_CMD}dotnet\s+test\b",               "none", "dotnet test"),
@@ -196,12 +208,31 @@ def _classify_segment(seg: str):
     return None, None
 
 
+def _check_composition_patterns(command: str):
+    """Detect dangerous pipe compositions that per-segment max-risk misses."""
+    if re.search(r'\b(curl|wget)\b.*\|\s*(bash|sh|python|python3|py|node)\b', command, re.IGNORECASE):
+        return "download and execute", "high"
+    return None, None
+
+
+def _has_write_redirect(command: str) -> bool:
+    """True when command writes output to a real file via > or >>."""
+    s = re.sub(r'"[^"]*"', '""', command)
+    s = re.sub(r"'[^']*'", "''", s)
+    return bool(re.search(r'\s>>?\s+(?!/dev/null\b)\S', s))
+
+
 def rules_classify(command: str):
     """Classify by rules, splitting compound commands on ; && || |.
     Returns (desc, danger) or (None, None) if any part is unknown."""
     cmd = (command or "").strip()
     if not cmd:
         return "empty", "none"
+
+    comp_desc, comp_danger = _check_composition_patterns(cmd)
+    if comp_danger:
+        return comp_desc, comp_danger
+
     parts = re.split(r"\s*(?:;|&&|\|\||\|)\s*", cmd)
     worst_desc, worst_danger = None, None
     any_unknown = False
@@ -219,6 +250,10 @@ def rules_classify(command: str):
         return None, None
     if any_unknown:
         return None, None
+
+    if worst_danger in ("none", "low") and _has_write_redirect(cmd):
+        return "write to file via redirect", "medium"
+
     return worst_desc, worst_danger
 
 
@@ -418,7 +453,8 @@ Allow ("yes") when — check these FIRST, before deny rules:
    embedded working context — NOT as the target of rm/mv/chmod.
 
 3) Typical dev/test/deploy workflow — git push, git commit, docker build/run/stop,
-   dotnet build/test, npm install, pytest.
+   dotnet build/test, npm install, pytest. Includes running project scripts from the
+   working directory: python run.py, bash build.sh, bash test.sh, node start.js.
 
 4) Tempfile/log/build-artefact maintenance — mv/cp/rm on bin/, obj/, *.log, *.tmp,
    /tmp/*, AppData/Local/Temp/*.
@@ -435,6 +471,8 @@ Deny ("no") when:
 - Command touches USER SECRETS (.ssh/, .gnupg/, .env*, *credentials*, *token*, *.key, *.pem)
   AND forwards them to a non-matching destination or writes them to a new file/location.
   (Reading a same-origin token as in "Allow" above is NOT this case.)
+- Script is run from /tmp, AppData/Temp, or a downloaded/unfamiliar path (not inside
+  the working project directory)
 - Command deletes/moves CRITICAL PROJECT ARTEFACTS:
   * files: {crit_files}
   * dirs:  {crit_dirs}

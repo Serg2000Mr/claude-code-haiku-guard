@@ -85,10 +85,12 @@ Env vars:
 
 ```bash
 cd tests
-python test_classifier.py              # 41 classification cases
-python test_haiku_decision.py          # 18 decision cases
-python test_interpreter_destructive.py # 9 interpreter-content cases
+python test_classifier.py              # 52 offline cases — no API key needed
+python test_haiku_decision.py          # 18 Haiku decision cases — requires key
+python test_interpreter_destructive.py # 9 interpreter-body cases — requires key
 ```
+
+The two network-dependent suites skip gracefully when no key is available.
 
 ## Cost
 

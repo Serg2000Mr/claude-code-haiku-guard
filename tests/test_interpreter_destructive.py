@@ -1,14 +1,26 @@
-"""Interpreters with destructive content must surface the dialog.
+"""Interpreter body content tests — end-to-end (classifier + Haiku decision).
 
 Harmless content (print, echo, Get-Date) should still be allowed via
 the Haiku decision layer — the classifier floors them to `medium`
-but Haiku recognizes non-destructive code."""
+but Haiku recognizes non-destructive code.
+
+Destructive content (shutil.rmtree, Remove-Item -Recurse) must surface
+the dialog even though the outer command is only classified as `medium`.
+
+Requires HAIKU_GUARD_OPENROUTER_KEY env var or ~/.openrouter_key.
+Skipped gracefully when no key is available.
+"""
 import sys
 import os
 
 HOOK_DIR = os.path.join(os.path.dirname(__file__), "..", "hook")
 sys.path.insert(0, os.path.abspath(HOOK_DIR))
-from haiku_guard import describe_bash, ask_haiku  # noqa: E402
+from haiku_guard import describe_bash, ask_haiku, read_openrouter_key  # noqa: E402
+
+if not read_openrouter_key():
+    print("SKIP: no OpenRouter key found (HAIKU_GUARD_OPENROUTER_KEY or ~/.openrouter_key).")
+    print("This suite tests Haiku body inspection — set a key to run it.")
+    sys.exit(0)
 
 cache = os.path.expanduser("~/.claude/hooks/haiku_cache.json")
 if os.path.exists(cache):
