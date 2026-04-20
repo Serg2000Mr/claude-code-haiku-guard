@@ -1,10 +1,10 @@
-# claude-code-haiku-guard
+# 🛡️ claude-code-haiku-guard
 
 A Bash permission guard for Claude Code that reduces routine permission prompts without relying on broad `Bash(*)` rules. It classifies each Bash command by risk, lets clearly safe commands through, and keeps suspicious or destructive commands visible.
 
 > [Русская версия →](README.ru.md)
 
-## Why this exists
+## ⚠️ Why this exists
 
 Claude Code permission rules are glob-based. A rule like `Bash(echo *)` also matches `echo ok && rm -rf .git`, because `*` spans spaces and shell operators. That makes broad prefix rules convenient, but hard to trust.
 
@@ -18,7 +18,7 @@ This repo takes a different approach. Instead of approving command prefixes, it 
 
 Public incident examples that motivated these defaults are collected in [INCIDENTS.md](INCIDENTS.md).
 
-## How it decides
+## 🔍 How it decides
 
 1. Match known command shapes with regex rules.
 2. Keep interpreter wrappers such as `python -c`, `bash -c`, and `powershell -Command` at least `medium`.
@@ -27,7 +27,7 @@ Public incident examples that motivated these defaults are collected in [INCIDEN
 
 If the OpenRouter key is missing, the network fails, or the model call errors out, medium-risk commands fall back to a dialog instead of silent allow. High and critical commands never bypass the dialog.
 
-## Quick start
+## 🚀 Quick start
 
 See [SETUP.md](SETUP.md) for the full walkthrough. The short version is:
 
@@ -37,7 +37,7 @@ See [SETUP.md](SETUP.md) for the full walkthrough. The short version is:
 4. Remove broad `Bash(<something> *)` entries from your allow-list.
 5. Restart Claude Code.
 
-## Configuration
+## ⚙️ Configuration
 
 Optional config lives at `~/.claude/hooks/haiku_guard.config.json`:
 
@@ -60,7 +60,7 @@ Environment variables:
 
 The default model is `anthropic/claude-haiku-4.5`. You can point `HAIKU_GUARD_MODEL` at another OpenRouter model, but only the default has been exercised so far. If you switch models, rerun the Haiku-backed tests first.
 
-## Tests
+## 🧪 Tests
 
 ```bash
 cd tests
@@ -71,7 +71,7 @@ python test_interpreter_destructive.py
 
 `test_classifier.py` is fully offline. The two Haiku-backed suites require an OpenRouter key and skip cleanly when no key is configured.
 
-## Limitations
+## ⚠️ Limitations
 
 - The rules and examples are tuned for Windows and Git Bash.
 - The hook contract is specific to Claude Code.
