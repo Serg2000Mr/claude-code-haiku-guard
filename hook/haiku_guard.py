@@ -503,7 +503,7 @@ Allow ("yes") when — check these FIRST, before deny rules:
      Group-Object, Format-Table, Format-List, Out-String, Out-Host
    - ConvertFrom-Json, ConvertTo-Json, ConvertFrom-Csv and other Convert* cmdlets
    - Variable assignment ($var = ...) when the right side is read-only
-   - Hash tables @{...} and script blocks {$_.prop} used with Select-Object/Where-Object
+   - Hash tables @{{...}} and script blocks {{$_.prop}} used with Select-Object/Where-Object
    - read-only HTTP (requests.get, urllib.urlopen, curl without -o to system path)
    - JSON/XML parsing, math
 
