@@ -1,0 +1,581 @@
+"""Claude Code Bash permission guard powered by Claude Haiku.
+
+Flow:
+  1. Hook reads tool_input from stdin (PreToolUse or PermissionRequest).
+  2. For Bash, classify the command by regex rules with LLM fallback.
+  3. Classification is floored for interpreter wrappers (python -c, bash -c, ...)
+     so LLM cannot downgrade container commands below "medium".
+  4. Decision:
+       - none / low  -> auto allow (silent)
+       - medium      -> ask Haiku LLM; allow if safe, else surface dialog
+       - high / crit -> always dialog (Haiku cannot override)
+  5. Fail-closed: missing API key or network error -> dialog, not silent allow.
+
+Files:
+  ~/.openrouter_key               Bearer token for OpenRouter (or set
+                                  HAIKU_GUARD_OPENROUTER_KEY env var)
+  ~/.claude/hooks/haiku_cache.json Decision cache (key = cmd + cwd)
+  ~/.claude/hooks/haiku_log.jsonl  Decision log
+
+Optional config JSON at ~/.claude/hooks/haiku_guard.config.json overrides
+the "critical artifacts" and "development processes" lists used by the
+Haiku decision prompt. See README.
+"""
+import sys
+import json
+import os
+import re
+import hashlib
+import datetime
+import urllib.request
+
+
+# -----------------------------------------------------------------------------
+# Configuration
+# -----------------------------------------------------------------------------
+
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+OPENROUTER_KEY_CANDIDATES = [
+    os.environ.get("HAIKU_GUARD_OPENROUTER_KEY_FILE", ""),
+    os.path.expanduser("~/.openrouter_key"),
+]
+LLM_MODEL = os.environ.get("HAIKU_GUARD_MODEL", "anthropic/claude-haiku-4.5")
+LLM_TIMEOUT_SEC = int(os.environ.get("HAIKU_GUARD_TIMEOUT", "15"))
+CACHE_FILE = os.path.expanduser("~/.claude/hooks/haiku_cache.json")
+LOG_FILE = os.path.expanduser("~/.claude/hooks/haiku_log.jsonl")
+CONFIG_FILE = os.path.expanduser("~/.claude/hooks/haiku_guard.config.json")
+
+DEFAULT_CONFIG = {
+    # Files/dirs that must NEVER be silently mutated by the agent.
+    "critical_files": [
+        "CLAUDE.md", "settings.json", "settings.local.json",
+        "*.csproj", "*.sln", "package.json", "pyproject.toml",
+        "Cargo.toml", "go.mod", "Makefile", "Dockerfile",
+    ],
+    "critical_dirs": [
+        ".claude/", ".git/", ".github/", "src/", "lib/", "app/",
+    ],
+    # Process names considered "development" (safe to kill).
+    "development_processes": [
+        "dotnet", "node", "python", "code", "ruby", "java",
+    ],
+}
+
+
+def _load_config() -> dict:
+    try:
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        out = {**DEFAULT_CONFIG}
+        out.update({k: v for k, v in data.items() if k in DEFAULT_CONFIG})
+        return out
+    except Exception:
+        return DEFAULT_CONFIG
+
+
+# -----------------------------------------------------------------------------
+# Logging
+# -----------------------------------------------------------------------------
+
+def log_event(event: dict) -> None:
+    try:
+        event = {**event, "ts": datetime.datetime.now(datetime.timezone.utc).isoformat()}
+        os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(event, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
+# -----------------------------------------------------------------------------
+# OpenRouter key
+# -----------------------------------------------------------------------------
+
+def _read_first_line(path: str) -> str:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return f.readline().strip()
+    except Exception:
+        return ""
+
+
+def read_openrouter_key() -> str:
+    env_key = os.environ.get("HAIKU_GUARD_OPENROUTER_KEY", "").strip()
+    if env_key.startswith("sk-or-"):
+        return env_key
+    for p in OPENROUTER_KEY_CANDIDATES:
+        if not p:
+            continue
+        k = _read_first_line(p)
+        if k.startswith("sk-or-"):
+            return k
+    return ""
+
+
+# -----------------------------------------------------------------------------
+# Rules-based classification
+# -----------------------------------------------------------------------------
+
+_CMD = r"^\s*"
+
+BASH_RULES = [
+    # critical
+    (rf"{_CMD}rm\s+-[rf]+\s*[/\\]\s*(\*|$)", "critical", "delete filesystem root"),
+    (rf"{_CMD}(mkfs|fdisk|parted)\b",         "critical", "format disk"),
+    (rf"{_CMD}dd\s+.*of=\s*/dev/",            "critical", "overwrite raw device"),
+    (rf"{_CMD}(shutdown|reboot|halt|poweroff)\b", "critical", "power off system"),
+    (r":\s*\(\s*\)\s*\{",                     "critical", "fork bomb"),
+    # high
+    (rf"{_CMD}git\s+push\s+.*(--force\b|\s-f\b)", "high", "force-push"),
+    (rf"{_CMD}git\s+reset\s+--hard",          "high", "hard reset"),
+    (rf"{_CMD}git\s+clean\s+-",               "high", "git clean untracked"),
+    (rf"{_CMD}git\s+restore\b",               "high", "git restore (discard)"),
+    (rf"{_CMD}rm\s+-[rf]*r[rf]*\b",           "high", "recursive delete"),
+    (rf"{_CMD}rm\s+--recursive\b",            "high", "recursive delete"),
+    (rf"{_CMD}drop\s+(table|database|schema)\b", "high", "drop table/db"),
+    (rf"{_CMD}truncate\s+table\b",            "high", "truncate table"),
+    (rf"{_CMD}(pkill|killall)\s+\S",          "high", "mass kill by name"),
+    # medium: interpreter wrappers (captured as safety floor below)
+    (rf"{_CMD}git\s+push\s+.*(--dry-run\b|\s-n\b)", "none", "git push --dry-run"),
+    (rf"{_CMD}git\s+push\b",                  "medium", "git push"),
+    (rf"{_CMD}git\s+commit\s+--amend",        "medium", "git commit --amend"),
+    (rf"{_CMD}git\s+rebase\b",                "medium", "git rebase"),
+    (rf"{_CMD}git\s+checkout\s+--\s",         "medium", "git checkout -- file"),
+    (rf"{_CMD}rm\s+(?!--)\S",                 "medium", "delete file"),
+    (rf"{_CMD}mv\s+\S",                       "medium", "move/rename"),
+    (rf"{_CMD}docker\s+(rm|kill|stop)\b",     "medium", "stop container"),
+    (rf"{_CMD}docker\s+compose\s+(down|stop)\b", "medium", "compose down/stop"),
+    (rf"{_CMD}kill\s+\S",                     "medium", "kill process"),
+    (rf"{_CMD}(npm|pnpm|yarn)\s+uninstall\b", "medium", "uninstall package"),
+    (rf"{_CMD}(chmod|chown)\s+\S",            "medium", "change permissions"),
+    (rf"{_CMD}gh\s+pr\s+merge\b",             "medium", "merge PR"),
+    (rf"{_CMD}gh\s+repo\s+delete\b",          "critical", "delete repo"),
+    # interpreters (also anchored by _segment_floor)
+    (rf"{_CMD}(python|python3|py)\s+-m\s+pytest",     "none",   "run pytest"),
+    (rf"{_CMD}(python|python3|py)\s+-c\b",            "medium", "python -c arbitrary code"),
+    (rf"{_CMD}(python|python3|py)\s+-m\s+\w+",        "low",    "python -m module"),
+    (rf"{_CMD}(python|python3|py)\b",                 "low",    "python script"),
+    (rf"{_CMD}node\s+-e\b",                           "medium", "node -e arbitrary code"),
+    (rf"{_CMD}node\b",                                "low",    "node script"),
+    (rf"{_CMD}bash\s+-c\b",                           "medium", "bash -c arbitrary code"),
+    (rf"{_CMD}bash\s+",                               "low",    "bash script"),
+    (rf"{_CMD}(powershell|pwsh)(\.exe)?\s+.*-Command\b",
+                                                      "medium", "PowerShell -Command arbitrary code"),
+    (rf"{_CMD}dotnet\s+test\b",               "none", "dotnet test"),
+    (rf"{_CMD}dotnet\s+(run|exec)\b",         "low",  "dotnet run/exec"),
+    (rf"{_CMD}(curl|wget)\b",                 "low",  "network fetch"),
+    # safe read-only
+    (rf"{_CMD}(ls|cat|head|tail|grep|rg|find|echo|pwd|whoami|which|where|type|stat|file|du|df|ps|top|htop|wc|sed|awk|cut|sort|uniq|tr|xargs|jq|printf|date|hostname|uname|env)\b",
+                                              "none", "read-only"),
+    (rf"{_CMD}git\s+(status|log|diff|show|branch|remote|describe|rev-parse|ls-files|blame|reflog|shortlog|tag)\b",
+                                              "none", "git read-only"),
+    (rf"{_CMD}git\s+config\s+--get\b",        "none", "git config read"),
+    (rf"{_CMD}gh\s+(issue|pr|repo|release|run|workflow|project|search|api)\s+(list|view|status|search|diff|checks|show|get|read)\b",
+                                              "none", "gh read-only"),
+    (rf"{_CMD}docker\s+(ps|images|logs|inspect|info|version|stats|top|history)\b",
+                                              "none", "docker read-only"),
+    (rf"{_CMD}cd\b",                          "none", "cd"),
+    (rf"{_CMD}sleep\s+\d",                    "none", "sleep"),
+    (rf"{_CMD}#",                             "none", "comment"),
+    (rf"{_CMD}(Get-|Select-|Where-|Measure-|Format-|Out-|Test-Path|Read-Host|Write-Host|ConvertFrom-|ConvertTo-)\w+\b",
+                                              "none", "PowerShell read-only"),
+    (rf"{_CMD}(New-Item|Copy-Item|Move-Item|Set-Content|Add-Content)\b",
+                                              "low", "PowerShell file edit"),
+    (rf"{_CMD}(Remove-Item|rm-item|ri)\b",    "high", "PowerShell delete"),
+    (rf"{_CMD}(Start-Process|Invoke-Expression|iex)\b",
+                                              "medium", "PowerShell process start"),
+]
+
+_RANK = {"none": 0, "low": 1, "medium": 2, "high": 3, "critical": 4, "unknown": -1}
+
+
+def _classify_segment(seg: str):
+    for pattern, danger, human in BASH_RULES:
+        if re.search(pattern, seg, re.IGNORECASE):
+            return human, danger
+    return None, None
+
+
+def rules_classify(command: str):
+    """Classify by rules, splitting compound commands on ; && || |.
+    Returns (desc, danger) or (None, None) if any part is unknown."""
+    cmd = (command or "").strip()
+    if not cmd:
+        return "empty", "none"
+    parts = re.split(r"\s*(?:;|&&|\|\||\|)\s*", cmd)
+    worst_desc, worst_danger = None, None
+    any_unknown = False
+    for p in parts:
+        p = p.strip()
+        if not p:
+            continue
+        desc, danger = _classify_segment(p)
+        if danger is None:
+            any_unknown = True
+            continue
+        if worst_danger is None or _RANK[danger] > _RANK[worst_danger]:
+            worst_desc, worst_danger = desc, danger
+    if worst_danger is None:
+        return None, None
+    if any_unknown:
+        return None, None
+    return worst_desc, worst_danger
+
+
+def is_complex(command: str) -> bool:
+    c = command or ""
+    if len(c) > 160:
+        return True
+    markers = ("$(", "`", "<<", "powershell -c", "powershell -command",
+               "cmd /c", "bash -c", "-Command", "Add-Type", "Invoke-Expression")
+    low = c.lower()
+    return any(m.lower() in low for m in markers)
+
+
+# -----------------------------------------------------------------------------
+# Interpreter floor — LLM cannot downgrade these below "medium"
+# -----------------------------------------------------------------------------
+
+def _segment_floor(command: str):
+    floor_rules = [
+        (rf"{_CMD}(python|python3|py)\s+-c\b",                      "medium", "python -c arbitrary code"),
+        (rf"{_CMD}node\s+-e\b",                                     "medium", "node -e arbitrary code"),
+        (rf"{_CMD}bash\s+-c\b",                                     "medium", "bash -c arbitrary code"),
+        (rf"{_CMD}sh\s+-c\b",                                       "medium", "sh -c arbitrary code"),
+        (rf"{_CMD}(powershell|pwsh)(\.exe)?\s+.*-Command\b",        "medium", "PowerShell -Command arbitrary code"),
+        (rf"{_CMD}cmd(\.exe)?\s+/c\b",                              "medium", "cmd /c arbitrary code"),
+    ]
+    for pattern, danger, human in floor_rules:
+        if re.search(pattern, command or "", re.IGNORECASE):
+            return human, danger
+    return None, None
+
+
+# -----------------------------------------------------------------------------
+# LLM classification (OpenRouter Haiku)
+# -----------------------------------------------------------------------------
+
+LLM_SYSTEM_PROMPT = """You are a shell-command classifier for an AI coding agent (primarily Windows dev workflows).
+
+CORE RULE: classify by the command SHAPE, not by whether the specific args make it a no-op.
+- "git checkout -- <any-file>"   -> medium, even if the file does not exist (user might typo a real one)
+- "rm -rf <any-path>"            -> high, even if the path does not exist (one typo = catastrophe)
+- "git reset --hard"             -> high, always
+- "kill -0"                      -> none (PID check). Other "kill" -> medium
+- "--dry-run", "--help", "-n" (no-op flags) -> none (true simulation)
+
+Levels:
+- none     read/view/navigate/simulate (ls, cat, git status, git push --dry-run, docker ps, cd)
+- low      create / easy-rollback (npm install, git commit, mkdir, cp, touch)
+- medium   single irreversible action (rm file, mv, git push, git checkout -- file, docker stop, kill, chmod)
+- high     mass-data-loss risk (rm -rf, git push --force, git reset --hard, git restore, drop table)
+- critical system destruction (rm -rf /, mkfs, shutdown, dd of=/dev/*, fork bomb)
+
+Compound commands (&&, ||, ;, |): take the MAX over segments.
+Interpreters (python -c, powershell -Command, bash -c, node -e): analyse inner code.
+
+OUTPUT: one line exactly
+<short description 2-6 words> | <level>
+no explanation, no markdown."""
+
+
+def _cache_key(s: str) -> str:
+    return hashlib.sha256(s.encode("utf-8")).hexdigest()[:16]
+
+
+def _load_cache() -> dict:
+    try:
+        with open(CACHE_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_cache(cache: dict) -> None:
+    try:
+        os.makedirs(os.path.dirname(CACHE_FILE), exist_ok=True)
+        tmp = CACHE_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(cache, f, ensure_ascii=False)
+        os.replace(tmp, CACHE_FILE)
+    except Exception:
+        pass
+
+
+def llm_classify(command: str):
+    key = read_openrouter_key()
+    if not key:
+        return None, None
+    body = json.dumps({
+        "model": LLM_MODEL,
+        "messages": [
+            {"role": "system", "content": LLM_SYSTEM_PROMPT},
+            {"role": "user", "content": command},
+        ],
+        "max_tokens": 80,
+        "temperature": 0,
+    }).encode("utf-8")
+    req = urllib.request.Request(OPENROUTER_URL, data=body, headers={
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+    })
+    try:
+        resp = json.loads(urllib.request.urlopen(req, timeout=LLM_TIMEOUT_SEC).read())
+        content = (resp.get("choices") or [{}])[0].get("message", {}).get("content", "").strip()
+    except Exception as e:
+        log_event({"phase": "llm_classify_error", "error": str(e)[:200]})
+        return None, None
+    parts = content.split("|", 1)
+    if len(parts) != 2:
+        return None, None
+    desc = parts[0].strip()
+    danger = parts[1].strip().lower()
+    if danger not in _RANK or danger == "unknown":
+        return None, None
+    return desc[:60], danger
+
+
+def describe_bash(command: str):
+    """Classification pipeline:
+       1) Interpreter floor (medium minimum).
+       2) Simple commands -> rules.
+       3) Complex or rule-unknown -> LLM, clamped by floor."""
+    floor_desc, floor_danger = _segment_floor(command)
+
+    if not is_complex(command):
+        d, dn = rules_classify(command)
+        if dn is not None:
+            if floor_danger and _RANK[dn] < _RANK[floor_danger]:
+                return floor_desc, floor_danger
+            return d, dn
+
+    key = _cache_key(f"classify:{command}")
+    cache = _load_cache()
+    if key in cache:
+        entry = cache[key]
+        desc, danger = entry.get("desc", "command"), entry.get("danger", "unknown")
+        if floor_danger and _RANK.get(danger, -1) < _RANK[floor_danger]:
+            return floor_desc, floor_danger
+        return desc, danger
+
+    d, dn = llm_classify(command)
+    if dn is None:
+        d2, dn2 = rules_classify(command)
+        if dn2 is not None:
+            if floor_danger and _RANK[dn2] < _RANK[floor_danger]:
+                return floor_desc, floor_danger
+            return d2, dn2
+        if floor_danger:
+            return floor_desc, floor_danger
+        first = (command or "").strip().split()
+        return f"command {os.path.basename(first[0])[:20] if first else '?'}", "unknown"
+
+    if floor_danger and _RANK[dn] < _RANK[floor_danger]:
+        cache[key] = {"desc": floor_desc, "danger": floor_danger, "source": "floor"}
+        _save_cache(cache)
+        return floor_desc, floor_danger
+
+    cache[key] = {"desc": d, "danger": dn, "source": "llm"}
+    _save_cache(cache)
+    return d, dn
+
+
+# -----------------------------------------------------------------------------
+# Haiku decision layer (medium danger only)
+# -----------------------------------------------------------------------------
+
+def _build_decision_prompt(cfg: dict) -> str:
+    crit_files = ", ".join(cfg.get("critical_files", []))
+    crit_dirs = ", ".join(cfg.get("critical_dirs", []))
+    dev_procs = ", ".join(cfg.get("development_processes", []))
+    return f"""You are a safety gate for a Windows developer AI agent.
+Input: a shell command plus its description and danger level.
+Output: one word — "yes" (silently allow) or "no" (prompt the user).
+
+Allow ("yes") when:
+- Command is typical dev/test/deploy workflow
+- mv/cp/rm for tempfiles, logs, build artefacts (bin/, obj/, *.log, *.tmp, /tmp/*, AppData/Local/Temp/*)
+- git push, git commit, docker build/run/stop, dotnet build/test in normal form
+- kill/pkill for development processes: {dev_procs}
+- INTERPRETER body only does read / output / arithmetic / imports without destructive calls:
+  * print(...), echo, Write-Host, Write-Output
+  * Get-* cmdlets without -Force
+  * imports without destructive method calls
+  * read-only network (requests.get, curl without -o to system path)
+  * JSON/XML parsing, computation
+
+Deny ("no") when:
+- Command touches SYSTEM paths (/, /c/Windows, /c/Program Files, /c/ProgramData)
+- Command touches USER SECRETS (.ssh/, .gnupg/, .env*, *credentials*, *token*, *.key, *.pem)
+- Command deletes/moves CRITICAL PROJECT ARTEFACTS:
+  * files: {crit_files}
+  * dirs:  {crit_dirs}
+  * markdown docs outside /archive/ or similar
+- Command moves/deletes a whole project directory (mv/rm of a folder)
+- Looks like exploit, data exfiltration, or mass overwrite
+- kill PID < 100 (system processes) or kill 1 (init)
+- INTERPRETER body contains destructive calls:
+  * shutil.rmtree, os.remove, os.unlink, pathlib.*.unlink
+  * subprocess with rm/del/Remove-Item/rd
+  * Remove-Item with -Force/-Recurse, Clear-RecycleBin
+  * network-load + write-to-file + exec pattern (curl|iwr → Invoke-Expression)
+  * P/Invoke to win32 API, Add-Type with native code
+
+When in doubt, deny. The user can still approve via the dialog.
+
+FORMAT: one word — yes or no"""
+
+
+def ask_haiku(tool_name: str, tool_input: dict, desc: str, danger: str) -> bool:
+    """Returns True = allow, False = surface dialog. Fail-closed."""
+    cmd = str(tool_input.get("command") or tool_input.get("file_path") or "")
+    try:
+        cwd = os.getcwd()
+    except Exception:
+        cwd = "?"
+    cache_key_str = f"haiku_decision:v2:{tool_name}:cwd={cwd}:{cmd}"
+    key = _cache_key(cache_key_str)
+    cache = _load_cache()
+    if key in cache:
+        entry = cache[key]
+        log_event({"phase": "haiku_cached", "desc": desc, "verdict": entry.get("verdict")})
+        return entry.get("verdict", False)
+
+    or_key = read_openrouter_key()
+    if not or_key:
+        log_event({"phase": "haiku_no_key_fail_closed", "desc": desc})
+        return False
+
+    cfg = _load_config()
+    user_msg = f"Tool: {tool_name}\nCWD: {cwd}\nCommand: {cmd}\nDescription: {desc}\nLevel: {danger}"
+    body = json.dumps({
+        "model": LLM_MODEL,
+        "messages": [
+            {"role": "system", "content": _build_decision_prompt(cfg)},
+            {"role": "user", "content": user_msg},
+        ],
+        "max_tokens": 5,
+        "temperature": 0,
+    }).encode("utf-8")
+    req = urllib.request.Request(OPENROUTER_URL, data=body, headers={
+        "Authorization": f"Bearer {or_key}",
+        "Content-Type": "application/json",
+    })
+    try:
+        resp = json.loads(urllib.request.urlopen(req, timeout=LLM_TIMEOUT_SEC).read())
+        answer = (resp.get("choices") or [{}])[0].get("message", {}).get("content", "").strip().lower()
+    except Exception as e:
+        log_event({"phase": "haiku_error_fail_closed", "error": str(e)[:200]})
+        return False
+
+    verdict = answer.startswith("yes")
+    log_event({"phase": "haiku_decision", "desc": desc, "danger": danger,
+               "answer": answer, "verdict": verdict})
+    cache[key] = {"verdict": verdict, "answer": answer, "desc": desc, "cwd": cwd}
+    _save_cache(cache)
+    return verdict
+
+
+# -----------------------------------------------------------------------------
+# Tool description (non-Bash tools)
+# -----------------------------------------------------------------------------
+
+def describe(tool_name: str, tool_input: dict):
+    try:
+        if tool_name == "Bash":
+            return describe_bash(str(tool_input.get("command", "") or ""))
+        if tool_name == "Write":
+            fn = os.path.basename(str(tool_input.get("file_path", "?")))
+            return f"write {fn}", "low"
+        if tool_name == "Edit":
+            fn = os.path.basename(str(tool_input.get("file_path", "?")))
+            return f"edit {fn}", "low"
+        if tool_name == "WebFetch":
+            url = str(tool_input.get("url", "?"))
+            host = re.sub(r"^https?://", "", url).split("/")[0][:30]
+            return f"fetch {host}", "low"
+        return f"tool {tool_name}", "unknown"
+    except Exception:
+        return f"tool {tool_name}", "unknown"
+
+
+# -----------------------------------------------------------------------------
+# Decision emitters — PreToolUse and PermissionRequest wire formats differ
+# -----------------------------------------------------------------------------
+
+def _emit(event_name: str, decision: str, reason: str):
+    if event_name == "PreToolUse":
+        out = {"hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": decision,
+            "permissionDecisionReason": reason,
+        }}
+    else:  # PermissionRequest
+        if decision == "ask":
+            log_event({"phase": "ask_via_empty_stdout", "reason": reason})
+            return
+        body = {"behavior": decision}
+        if decision == "deny":
+            body["message"] = f"Denied: {reason}"
+        out = {"hookSpecificOutput": {"hookEventName": "PermissionRequest",
+                                      "decision": body}}
+    sys.stdout.write(json.dumps(out, ensure_ascii=False))
+    log_event({"phase": decision, "event": event_name, "reason": reason})
+
+
+def _emit_allow(reason: str, event_name: str = "PermissionRequest"):
+    _emit(event_name, "allow", reason)
+
+
+def _emit_deny(reason: str, event_name: str = "PermissionRequest"):
+    _emit(event_name, "deny", reason)
+
+
+def _emit_ask(reason: str, event_name: str = "PermissionRequest"):
+    _emit(event_name, "ask", reason)
+
+
+# -----------------------------------------------------------------------------
+# Main
+# -----------------------------------------------------------------------------
+
+def main() -> None:
+    try:
+        payload = json.load(sys.stdin)
+    except Exception:
+        log_event({"phase": "stdin_error"})
+        return
+
+    event_name = payload.get("hook_event_name") or "PermissionRequest"
+    tool_name = payload.get("tool_name", "?")
+    tool_input = payload.get("tool_input") or {}
+    desc, danger = describe(tool_name, tool_input)
+
+    log_event({
+        "phase": "classified",
+        "event": event_name,
+        "tool": tool_name,
+        "desc": desc,
+        "danger": danger,
+        "cmd_preview": str(
+            tool_input.get("command") or tool_input.get("file_path") or tool_input.get("url") or ""
+        )[:200],
+    })
+
+    if danger in ("none", "low"):
+        _emit_allow(f"auto: {danger}: {desc}", event_name)
+        return
+
+    if danger == "medium":
+        if ask_haiku(tool_name, tool_input, desc, danger):
+            _emit_allow(f"haiku: {desc}", event_name)
+        else:
+            _emit_ask(f"medium / haiku-denied: {desc}", event_name)
+        return
+
+    # high / critical / unknown — always surface dialog
+    _emit_ask(f"{danger}: {desc}", event_name)
+
+
+if __name__ == "__main__":
+    main()

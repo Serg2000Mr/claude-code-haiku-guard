@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.DS_Store
+.idea/
+.vscode/
+*.tmp
+*.log
+haiku_cache.json
+haiku_log.jsonl
