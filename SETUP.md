@@ -159,6 +159,23 @@ Missing fields fall back to `DEFAULT_CONFIG` in [hook/haiku_guard.py](hook/haiku
 
 **The hook never seems to run.** The matcher is probably wrong. Use `"matcher": "Bash"`, not `"bash"`.
 
+## 💸 Cost
+
+As of April 20, 2026, OpenRouter lists `anthropic/claude-haiku-4.5` at about `$1.00 / M` input tokens and `$5.00 / M` output tokens.
+
+In this hook, the usual cost is a single yes/no decision call for each new medium-risk command. More novel or more complex commands can trigger an extra classification call first, so those are a bit more expensive.
+
+Back-of-the-envelope daily numbers:
+
+- around 10 unique medium-risk commands: about `$0.01 / day`
+- around 50 unique medium-risk commands: about `$0.05 / day`
+- around 100 unique medium-risk commands: about `$0.10 / day`
+- a heavy session with the Haiku-backed tests: usually a few tens of cents, not dollars
+
+What really keeps the bill low is the local cache in `~/.claude/hooks/haiku_cache.json`: the same full command in the same `cwd` is not sent again.
+
+The requests do include `cache_control`, but Claude Haiku 4.5 prompt caching only kicks in from 4096 tokens upward. The prompts in this hook are much smaller than that, so provider-side prompt caching is not the main saving mechanism here.
+
 ## 🤖 Optional: choose a different model
 
 You can point the guard at another OpenRouter model:
