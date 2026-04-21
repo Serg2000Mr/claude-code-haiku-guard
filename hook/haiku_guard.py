@@ -510,13 +510,16 @@ Allow ("yes") when — check these FIRST, before deny rules:
    - Hash tables @{{...}} and script blocks {{$_.prop}} used with Select-Object/Where-Object
    - read-only HTTP (requests.get, urllib.urlopen, curl without -o to system path)
    - JSON/XML parsing, math
+   - Reading any config or metadata file (open(path, 'r'), json.load, Get-Content) —
+     any path including .claude/, settings.json, package.json, *.csproj
 
 Deny ("no") when:
 - Command touches SYSTEM paths (/, /c/Windows, /c/Program Files, /c/ProgramData)
 - Command touches USER SECRETS (.ssh/, .gnupg/, .env*, *credentials*, *token*, *.key, *.pem)
   AND forwards them to a non-matching destination or writes them to a new file/location.
   (Reading a same-origin token as in "Allow" above is NOT this case.)
-- Command deletes/moves CRITICAL PROJECT ARTEFACTS:
+- Command deletes/moves/overwrites CRITICAL PROJECT ARTEFACTS
+  (write/delete/move only; read via open('r'), json.load, cat is ALLOWED):
   * files: {crit_files}
   * dirs:  {crit_dirs}
   * markdown docs outside /archive/ or similar

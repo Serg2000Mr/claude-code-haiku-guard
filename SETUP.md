@@ -79,6 +79,8 @@ Delete entries like these from `permissions.allow`:
 "Bash(powershell *)"
 "Bash(echo *)"
 "Bash(cat *)"
+"Bash(curl *)"
+"Bash(wget *)"
 ```
 
 Why this matters:
@@ -86,15 +88,46 @@ Why this matters:
 - `Bash(git *)` also covers `git push --force` and `git reset --hard`
 - `Bash(bash *)` also covers `bash -c "rm -rf /"`
 - `Bash(echo *)` also covers `echo ok && rm -rf .git`
+- `Bash(curl *)` is a generic network escape hatch — any URL, any flag, any redirect
 
 Safe entries to keep are exact commands without wildcards, plus your deny list.
 
-## 🔄 5. Restart Claude Code
+For HTTP fetching, allow the built-in `WebFetch` tool instead of `Bash(curl ...)`:
+
+```json
+"allow": ["WebFetch"]
+```
+
+`WebFetch` is read-only (GET only, no cookies, returns text to Claude's context — not to the shell), so it can be allowed broadly. Use `WebFetch(domain:example.com)` only if you have a specific exfiltration concern.
+
+## 🛡️ 5. Duplicate critical deny rules (defense-in-depth)
+
+Claude Code has had bugs where `deny` rules do not always fire
+([#6631](https://github.com/anthropics/claude-code/issues/6631),
+[#12918](https://github.com/anthropics/claude-code/issues/12918),
+[#27040](https://github.com/anthropics/claude-code/issues/27040)). This hook is a second layer, but you should also keep the critical deny rules in `settings.json`:
+
+```json
+"deny": [
+  "Read(.env*)",
+  "Read(**/credentials*)",
+  "Bash(rm -rf /)",
+  "Bash(rm -rf ~*)",
+  "Bash(rm -rf /c/*)",
+  "Bash(git push --force *)",
+  "Bash(git reset --hard *)",
+  "Bash(chmod -R 777 *)"
+]
+```
+
+Two independent gates are cheap insurance against one of them misfiring.
+
+## 🔄 6. Restart Claude Code
 
 - VS Code extension: `Ctrl+Shift+P` -> `Developer: Reload Window`
 - CLI: exit and start it again
 
-## 🧪 6. Smoke test
+## 🧪 7. Smoke test
 
 Start with the deterministic checks:
 
@@ -121,7 +154,7 @@ Log file:
 tail -20 ~/.claude/hooks/haiku_log.jsonl
 ```
 
-## 🗂️ 7. Optional: project-specific config
+## 🗂️ 8. Optional: project-specific config
 
 If your project has its own critical files or directories, create `~/.claude/hooks/haiku_guard.config.json`:
 
@@ -172,9 +205,7 @@ Back-of-the-envelope daily numbers:
 - around 100 unique medium-risk commands: about `$0.10 / day`
 - a heavy session with the Haiku-backed tests: usually a few tens of cents, not dollars
 
-What really keeps the bill low is the local cache in `~/.claude/hooks/haiku_cache.json`: the same full command in the same `cwd` is not sent again.
-
-The requests do include `cache_control`, but Claude Haiku 4.5 prompt caching only kicks in from 4096 tokens upward. The prompts in this hook are much smaller than that, so provider-side prompt caching is not the main saving mechanism here.
+What really keeps the bill low is the local cache in `~/.claude/hooks/haiku_cache.json`: the same full command in the same `cwd` is not sent again. Provider-side prompt caching would not help here — Claude Haiku 4.5 only starts caching from 4096 tokens, and the prompts in this hook are much shorter.
 
 ## 🤖 Optional: choose a different model
 
