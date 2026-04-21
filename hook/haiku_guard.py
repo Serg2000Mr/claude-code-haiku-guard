@@ -94,9 +94,9 @@ def log_event(event: dict) -> None:
 # Windows notification
 # -----------------------------------------------------------------------------
 
-def _notify(title: str, body: str) -> None:
+def _notify(title: str, body: str, icon: str = "info") -> None:
     """Show a Windows MessageBox. Rate-limited to once per 30 minutes.
-    No-op on non-Windows or when ctypes is unavailable."""
+    icon: "info" or "error". No-op on non-Windows or when ctypes is unavailable."""
     try:
         now = datetime.datetime.now(datetime.timezone.utc).timestamp()
         if os.path.exists(NOTIFY_LOCK):
@@ -113,9 +113,10 @@ def _notify(title: str, body: str) -> None:
         pass
     try:
         import ctypes
+        icon_flag = 0x10 if icon == "error" else 0x40  # MB_ICONERROR / MB_ICONINFORMATION
         ctypes.windll.user32.MessageBoxW(
             0, body, title,
-            0x40 | 0x1000,  # MB_ICONINFORMATION | MB_SYSTEMMODAL
+            icon_flag | 0x1000,  # icon | MB_SYSTEMMODAL
         )
     except Exception:
         pass
@@ -716,6 +717,77 @@ def describe(tool_name: str, tool_input: dict):
 # Decision emitters — PreToolUse and PermissionRequest wire formats differ
 # -----------------------------------------------------------------------------
 
+# Patterns for CATASTROPHIC commands — never legitimate in a dev workflow,
+# and a single accidental "Yes" click would be unrecoverable.
+# When matched, the hook replaces the command with a harmless echo and asks
+# the user to review the chat — agent workflow pauses on the ask dialog.
+CATASTROPHIC_PATTERNS = [
+    (r"^\s*rm\s+(?:-\S*\s+)*/\s*(?:$|[;&|])",                "rm of root /"),
+    (r"^\s*rm\s+(?:-\S*\s+)*/\*",                            "rm of root contents /*"),
+    (r"^\s*rm\s+(?:-\S*\s+)*(?:~|\$HOME)/?\s*(?:$|[;&|])",   "rm of home directory"),
+    (r"^\s*rm\s+(?:-\S*\s+)*/c/?\s*(?:$|[;&|])",             "rm of Windows C: drive"),
+    (r"^\s*rm\s+(?:-\S*\s+)*/c/\*",                          "rm of Windows C: contents"),
+    (r"^\s*dd\s+.*\bof=/dev/(?:sd|nvme|hd|vd|xvd)",          "dd raw write to disk device"),
+    (r"^\s*mkfs(?:\.\w+)?\s+/dev/(?:sd|nvme|hd|vd|xvd)",     "mkfs format of disk device"),
+    (r":\s*\(\s*\)\s*\{[^}]*:\s*\|\s*:\s*&[^}]*\}\s*;?\s*:", "fork bomb"),
+    (r"^\s*chmod\s+.*-R\s+777\s+(?:/|~|\$HOME)\s*(?:$|[;&|])", "chmod -R 777 on root or home"),
+]
+
+
+def _is_catastrophic(command: str) -> str | None:
+    """Return the human description if command matches any catastrophic pattern, else None."""
+    if not command:
+        return None
+    for pattern, label in CATASTROPHIC_PATTERNS:
+        if re.search(pattern, command):
+            return label
+    return None
+
+
+def _emit_catastrophic_intercept(description: str, original_cmd: str,
+                                 event_name: str = "PreToolUse"):
+    """Replace destructive command with a safe echo and ask user to review chat."""
+    # The echo text is a plain literal string — no shell expansion of the original cmd.
+    safe_echo = (
+        'echo "CATASTROPHIC COMMAND BLOCKED by haiku-guard. '
+        f'Type: {description}. Review chat context before acting."'
+    )
+    reason = (
+        f"CATASTROPHIC intercept: agent attempted {description}. "
+        "Command has been replaced with a safe echo. "
+        "Click No to block. Click Yes only after reviewing the chat."
+    )
+    agent_notice = (
+        "SECURITY ALERT: Your previous tool call was a CATASTROPHIC destructive "
+        "command (type: " + description + "). It has been intercepted by the "
+        "security hook and replaced with a safe echo. You MUST stop executing "
+        "any further commands, acknowledge this to the user, and wait for "
+        "explicit user instructions. Do NOT attempt workarounds or alternative "
+        "paths to achieve the blocked action."
+    )
+    out = {"hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": "ask",
+        "permissionDecisionReason": reason,
+        "updatedInput": {"command": safe_echo},
+        "additionalContext": agent_notice,
+    }}
+    sys.stdout.write(json.dumps(out, ensure_ascii=False))
+    log_event({"phase": "catastrophic_intercept", "description": description,
+               "original_cmd": original_cmd[:300]})
+
+    # Also notify user via MessageBox — visible even if the Claude Code window is
+    # minimized or in the background.
+    _notify(
+        "Haiku Guard — CATASTROPHIC command intercepted",
+        "ATTENTION!\n\n"
+        f"Claude Code agent attempted: {description}\n\n"
+        f"Original command:\n{original_cmd[:300]}\n\n"
+        "Review the chat in Claude Code.",
+        icon="error",
+    )
+
+
 def _emit(event_name: str, decision: str, reason: str):
     if event_name == "PreToolUse":
         out = {"hookSpecificOutput": {
@@ -762,6 +834,16 @@ def main() -> None:
     event_name = payload.get("hook_event_name") or "PermissionRequest"
     tool_name = payload.get("tool_name", "?")
     tool_input = payload.get("tool_input") or {}
+
+    # Catastrophic intercept — runs BEFORE normal classification.
+    # Only meaningful for PreToolUse (updatedInput is a PreToolUse-only feature).
+    if event_name == "PreToolUse" and tool_name == "Bash":
+        raw_cmd = str(tool_input.get("command") or "")
+        catastrophic = _is_catastrophic(raw_cmd)
+        if catastrophic:
+            _emit_catastrophic_intercept(catastrophic, raw_cmd, event_name)
+            return
+
     desc, danger = describe(tool_name, tool_input)
 
     log_event({
