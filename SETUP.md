@@ -100,6 +100,8 @@ For HTTP fetching, allow the built-in `WebFetch` tool instead of `Bash(curl ...)
 
 `WebFetch` is read-only (GET only, no cookies, returns text to Claude's context — not to the shell), so it can be allowed broadly. Use `WebFetch(domain:example.com)` only if you have a specific exfiltration concern.
 
+If you already have a long list of `WebFetch(domain:github.com)`, `WebFetch(domain:docs.anthropic.com)`, etc. accumulated over time — replace them with a single `WebFetch` entry. Those domain allow rules were each added to answer a one-time "allow this site?" prompt; they don't add security (an attacker can still request any URL on any of those domains), they just clutter the config.
+
 ## 🛡️ 5. Duplicate critical deny rules (defense-in-depth)
 
 Claude Code has had bugs where `deny` rules do not always fire
