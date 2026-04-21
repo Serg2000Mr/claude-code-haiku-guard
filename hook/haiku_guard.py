@@ -497,9 +497,8 @@ Allow ("yes") when — check these FIRST, before deny rules:
    embedded working context — NOT as the target of rm/mv/chmod.
    This also covers SKILL-GENERATED TEMP SCRIPTS — short-lived Python/JS
    scripts written to AppData/Local/Temp/ or /tmp/ by Claude Code skills for
-   one-shot tasks. Names typically follow `<purpose>_<id>.py` (e.g.
-   `gh_comment_1493.py`, `gh_issue_42.py`). Treat them as routine skill
-   execution, NOT as new downloads from the internet.
+   one-shot tasks (names typically follow `<purpose>_<id>.py`). Treat them
+   as routine skill execution, NOT as new downloads from the internet.
 
 3) Typical dev/test/deploy workflow — git push, git commit, docker build/run/stop,
    dotnet build/test, npm install, pytest. Includes running project scripts from the
