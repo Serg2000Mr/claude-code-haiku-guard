@@ -536,23 +536,81 @@ Deny ("no") when:
 
 When in doubt, deny. The user can still approve via the dialog.
 
-FORMAT: one word — yes or no"""
+FORMAT: strict JSON on a single line, no code fences:
+{"verdict":"yes|no","reason":"short phrase, <60 chars"}"""
 
 
-def ask_haiku(tool_name: str, tool_input: dict, desc: str, danger: str) -> bool:
-    """Returns True = allow, False = surface dialog. Fail-closed."""
+def _parse_verdict_json(text: str) -> tuple[bool, str]:
+    """Parse LLM answer: strict JSON first, fallback to 'yes'/'no' keyword."""
+    t = (text or "").strip()
+    # strip optional code fences
+    if t.startswith("```"):
+        t = t.strip("`")
+        if t.startswith("json"):
+            t = t[4:]
+        t = t.strip()
+    try:
+        obj = json.loads(t)
+        v = str(obj.get("verdict", "")).strip().lower()
+        reason = str(obj.get("reason", "") or "")[:120]
+        return (v == "yes", reason)
+    except Exception:
+        # legacy single-word answer
+        low = t.lower()
+        return (low.startswith("yes"), "")
+
+
+def _run_custom_verifier(cmd_path: str, payload: dict) -> tuple[bool, str] | None:
+    """Run user-supplied verifier script. Returns (allow, reason) or None on error.
+    Script receives payload as JSON on stdin, returns {"allow": bool, "reason": str} on stdout."""
+    import subprocess
+    try:
+        proc = subprocess.run(
+            cmd_path, shell=True, input=json.dumps(payload),
+            capture_output=True, text=True, timeout=60,
+        )
+        if proc.returncode != 0:
+            log_event({"phase": "verifier_nonzero", "rc": proc.returncode,
+                       "stderr": (proc.stderr or "")[:200]})
+            return None
+        obj = json.loads(proc.stdout or "{}")
+        return (bool(obj.get("allow", False)), str(obj.get("reason", ""))[:120])
+    except Exception as e:
+        log_event({"phase": "verifier_error", "error": str(e)[:200]})
+        return None
+
+
+def ask_haiku(tool_name: str, tool_input: dict, desc: str, danger: str) -> tuple[bool, str]:
+    """Returns (allow, reason). Fail-closed on error."""
     cmd = str(tool_input.get("command") or tool_input.get("file_path") or "")
     try:
         cwd = os.getcwd()
     except Exception:
         cwd = "?"
-    cache_key_str = f"haiku_decision:v2:{tool_name}:cwd={cwd}:{cmd}"
+    cache_key_str = f"haiku_decision:v3:{tool_name}:cwd={cwd}:{cmd}"
     key = _cache_key(cache_key_str)
     cache = _load_cache()
     if key in cache:
         entry = cache[key]
-        log_event({"phase": "haiku_cached", "desc": desc, "verdict": entry.get("verdict")})
-        return entry.get("verdict", False)
+        log_event({"phase": "haiku_cached", "desc": desc,
+                   "verdict": entry.get("verdict"), "reason": entry.get("reason", "")})
+        return (entry.get("verdict", False), entry.get("reason", ""))
+
+    # Custom verifier takes precedence if configured
+    verifier_cmd = os.environ.get("HAIKU_GUARD_VERIFIER_CMD", "").strip()
+    if verifier_cmd:
+        payload = {"tool": tool_name, "command": cmd, "cwd": cwd,
+                   "description": desc, "danger": danger}
+        result = _run_custom_verifier(verifier_cmd, payload)
+        if result is None:
+            log_event({"phase": "verifier_fail_closed"})
+            return (False, "custom verifier error")
+        verdict, reason = result
+        log_event({"phase": "verifier_decision", "verdict": verdict, "reason": reason})
+        cache[key] = {"verdict": verdict, "reason": reason, "desc": desc, "cwd": cwd,
+                      "source": "custom"}
+        _save_cache(cache)
+        return (verdict, reason)
 
     or_key = read_openrouter_key()
     if not or_key:
@@ -564,7 +622,7 @@ def ask_haiku(tool_name: str, tool_input: dict, desc: str, danger: str) -> bool:
             "or env var: HAIKU_GUARD_OPENROUTER_KEY\n\n"
             "Medium-risk commands will show a dialog until this is fixed.",
         )
-        return False
+        return (False, "no OpenRouter key")
 
     cfg = _load_config()
     user_msg = f"Tool: {tool_name}\nCWD: {cwd}\nCommand: {cmd}\nDescription: {desc}\nLevel: {danger}"
@@ -574,7 +632,7 @@ def ask_haiku(tool_name: str, tool_input: dict, desc: str, danger: str) -> bool:
             {"role": "system", "content": _build_decision_prompt(cfg)},
             {"role": "user", "content": user_msg},
         ],
-        "max_tokens": 5,
+        "max_tokens": 80,
         "temperature": 0,
     }).encode("utf-8")
     req = urllib.request.Request(OPENROUTER_URL, data=body, headers={
@@ -583,7 +641,7 @@ def ask_haiku(tool_name: str, tool_input: dict, desc: str, danger: str) -> bool:
     })
     try:
         resp = json.loads(urllib.request.urlopen(req, timeout=LLM_TIMEOUT_SEC).read())
-        answer = (resp.get("choices") or [{}])[0].get("message", {}).get("content", "").strip().lower()
+        answer = (resp.get("choices") or [{}])[0].get("message", {}).get("content", "").strip()
     except urllib.error.HTTPError as e:
         code = e.code
         if code in (401, 403):
@@ -601,17 +659,18 @@ def ask_haiku(tool_name: str, tool_input: dict, desc: str, danger: str) -> bool:
                 "Top up at: openrouter.ai/settings/credits",
             )
         log_event({"phase": "haiku_error_fail_closed", "error": f"HTTP {code}"})
-        return False
+        return (False, f"HTTP {code}")
     except Exception as e:
         log_event({"phase": "haiku_error_fail_closed", "error": str(e)[:200]})
-        return False
+        return (False, "network error")
 
-    verdict = answer.startswith("yes")
+    verdict, reason = _parse_verdict_json(answer)
     log_event({"phase": "haiku_decision", "desc": desc, "danger": danger,
-               "answer": answer, "verdict": verdict})
-    cache[key] = {"verdict": verdict, "answer": answer, "desc": desc, "cwd": cwd}
+               "answer": answer, "verdict": verdict, "reason": reason})
+    cache[key] = {"verdict": verdict, "reason": reason, "answer": answer,
+                  "desc": desc, "cwd": cwd, "source": "haiku"}
     _save_cache(cache)
-    return verdict
+    return (verdict, reason)
 
 
 # -----------------------------------------------------------------------------
@@ -705,10 +764,12 @@ def main() -> None:
         return
 
     if danger == "medium":
-        if ask_haiku(tool_name, tool_input, desc, danger):
-            _emit_allow(f"haiku: {desc}", event_name)
+        allow, reason = ask_haiku(tool_name, tool_input, desc, danger)
+        tail = f" — {reason}" if reason else ""
+        if allow:
+            _emit_allow(f"haiku: {desc}{tail}", event_name)
         else:
-            _emit_ask(f"medium / haiku-denied: {desc}", event_name)
+            _emit_ask(f"medium / haiku-denied: {desc}{tail}", event_name)
         return
 
     # high / critical / unknown — always surface dialog

@@ -221,6 +221,35 @@ export HAIKU_GUARD_MODEL="mistralai/mistral-small-3"
 
 Отдельно обкатывался только `anthropic/claude-haiku-4.5`. После замены модели стоит перегнать `tests/test_haiku_decision.py` и `tests/test_interpreter_destructive.py`, и быть готовым, что поведение на краевых случаях сдвинется.
 
+## 🔌 Необязательно: свой верификатор
+
+Вместо Haiku через OpenRouter можно подключить свой верификатор — локальную модель, Codex, более строгий набор правил. Переменная `HAIKU_GUARD_VERIFIER_CMD` задаёт shell-команду, и хук пропустит вызов Haiku для medium-команд.
+
+Протокол:
+
+- **stdin** — JSON: `{"tool": "Bash", "command": "...", "cwd": "...", "description": "...", "danger": "medium"}`
+- **stdout** — JSON: `{"allow": true|false, "reason": "короткое объяснение"}`
+- **код выхода** — `0`; любой другой считается ошибкой
+- **таймаут** — 60 секунд, превышение = ошибка
+- **ошибка верификатора** — диалог (fail-closed), как и при отсутствии ключа OpenRouter
+
+Пример `my_verifier.sh`:
+
+```bash
+#!/bin/bash
+read -r payload
+# пример: пропускать только команды, начинающиеся с pytest
+if echo "$payload" | grep -q '"command":\s*"pytest'; then
+  echo '{"allow":true,"reason":"pytest пропущен"}'
+else
+  echo '{"allow":false,"reason":"не распознано"}'
+fi
+```
+
+```bash
+export HAIKU_GUARD_VERIFIER_CMD="bash /path/to/my_verifier.sh"
+```
+
 ## 🧼 Удалить
 
 Уберите запись `PreToolUse` из `settings.json`, удалите `~/.claude/hooks/haiku_guard.py`, при желании — `~/.claude/hooks/haiku_cache.json` и `~/.claude/hooks/haiku_log.jsonl`.

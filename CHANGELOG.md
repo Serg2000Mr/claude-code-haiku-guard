@@ -4,6 +4,12 @@ All notable user-visible changes live here. For the full commit history see `git
 
 ## 2026-04-21
 
+### New
+- **Reason exposed in the permission decision** — Haiku now returns `{"verdict":"yes|no","reason":"..."}`. The reason appears in `permissionDecisionReason` that Claude Code logs, and in the local `haiku_log.jsonl`. Makes false positives much easier to debug.
+- **Custom verifier hook** — set `HAIKU_GUARD_VERIFIER_CMD` to a shell command that receives `{command, cwd, danger, description}` on stdin and returns `{"allow": bool, "reason": "..."}` on stdout. Lets you swap Haiku for your own model, a stricter ruleset, Codex, etc. See SETUP.md.
+- `node --check`, `node --version`, `node -v` auto-allowed as read-only
+- `ForEach-Object` added to the PowerShell read-only pipeline list in the Haiku prompt
+
 ### Fewer false positives
 - `git push`, `git pull`, `git fetch` are now classified as `low` — no dialog on a normal push/pull
 - `python3 test_*.py`, `python3 -m pytest`, `dotnet test` — auto-allowed (`none`)
