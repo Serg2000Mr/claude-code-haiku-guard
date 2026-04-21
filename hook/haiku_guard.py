@@ -524,6 +524,10 @@ Allow ("yes") when — check these FIRST, before deny rules:
    - JSON/XML parsing, math
    - Reading any config or metadata file (open(path, 'r'), json.load, Get-Content) —
      any path including .claude/, settings.json, package.json, *.csproj
+   - Creating new files/directories/junctions in project or user paths
+     (New-Item including -ItemType Junction/SymbolicLink, mkdir, touch, Copy-Item to new path,
+     Set-Content/Add-Content on a new file). Creation is NOT destruction.
+     Deny only if the path overwrites a CRITICAL artefact listed below or sits in a system directory.
 
 Deny ("no") when:
 - Command touches SYSTEM paths (/, /c/Windows, /c/Program Files, /c/ProgramData)
