@@ -511,7 +511,10 @@ Allow ("yes") when — check these FIRST, before deny rules:
    destructive calls (length and complexity don't matter — a long read-only
    pipeline is still read-only):
    - print(...), echo, Write-Host, Write-Output
-   - Get-* cmdlets including Get-Content, Get-ChildItem, Get-Process (without -Force)
+   - Get-* cmdlets including Get-Content, Get-ChildItem, Get-Process, Get-WmiObject,
+     Get-CimInstance, Get-EventLog, Get-WinEvent, Get-Service, Get-ComputerInfo
+     (all without -Force). These are read-only QUERIES.
+     Invoke-WmiMethod and Invoke-CimMethod are separate and NOT allowed here.
    - Pipeline-only: Where-Object, Select-Object, Sort-Object, Measure-Object,
      Group-Object, ForEach-Object, Format-Table, Format-List, Out-String, Out-Host
    - ConvertFrom-Json, ConvertTo-Json, ConvertFrom-Csv and other Convert* cmdlets
@@ -541,6 +544,7 @@ Deny ("no") when:
   * Remove-Item with -Force/-Recurse, Clear-RecycleBin
   * network-load + write-to-file + exec pattern (curl|iwr → Invoke-Expression)
   * P/Invoke to win32 API, Add-Type with native code
+  * Invoke-WmiMethod / Invoke-CimMethod (can create processes or modify system)
 
 When in doubt, deny. The user can still approve via the dialog.
 
