@@ -1,0 +1,226 @@
+# 🔧 Установка
+
+Этот гайд сначала ставит и запускает защиту. Тонкая настройка модели — в конце.
+
+> [English version →](SETUP.md)
+
+## 🔑 1. Получить ключ OpenRouter
+
+Хук ходит в OpenRouter, поэтому ключ OpenAI или Anthropic здесь не подойдёт.
+
+1. Откройте <https://openrouter.ai/settings/keys>
+2. Создайте ключ вида `sk-or-...`
+3. Сохраните в `~/.openrouter_key`:
+
+```bash
+echo "sk-or-v1-..." > ~/.openrouter_key
+chmod 600 ~/.openrouter_key  # Linux/macOS
+```
+
+На Windows в Git Bash `~` разворачивается в `C:\Users\<вы>`.
+
+Альтернативный вариант — задать `HAIKU_GUARD_OPENROUTER_KEY` прямо в `settings.json` Claude Code.
+
+## 📦 2. Поставить файл хука
+
+```bash
+mkdir -p ~/.claude/hooks
+cp hook/haiku_guard.py ~/.claude/hooks/haiku_guard.py
+```
+
+Быстрая проверка отдельно от Claude Code:
+
+```bash
+echo '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"ls /tmp"}}' \
+  | python ~/.claude/hooks/haiku_guard.py
+```
+
+Ожидаемый вывод:
+
+```json
+{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"auto: none: read-only"}}
+```
+
+Если Python здесь ругается — сначала лечим это, потом подключаем хук.
+
+## ⚙️ 3. Подключить хук в `settings.json`
+
+Блок `hooks` из [examples/settings.json](examples/settings.json) нужно смержить в `~/.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python ~/.claude/hooks/haiku_guard.py",
+            "timeout": 70
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Рабочий путь здесь — `PreToolUse` с matcher по `Bash`. Скрипт понимает и `PermissionRequest`, но для обычной классификации используется `PreToolUse`.
+
+Даже с подключённым `PreToolUse` нужно вычистить широкие Bash-правила и в глобальных, и в проектных настройках. Иначе Claude Code разрешит команду по широкому правилу раньше, чем хук успеет что-то сказать.
+
+## 🧹 4. Убрать широкие правила Bash
+
+Уберите из `permissions.allow` записи такого вида:
+
+```text
+"Bash(*)"
+"Bash(git *)"
+"Bash(bash *)"
+"Bash(powershell *)"
+"Bash(echo *)"
+"Bash(cat *)"
+"Bash(curl *)"
+"Bash(wget *)"
+```
+
+Почему это важно:
+
+- `Bash(git *)` включает `git push --force` и `git reset --hard`
+- `Bash(bash *)` включает `bash -c "rm -rf /"`
+- `Bash(echo *)` включает `echo ok && rm -rf .git`
+- `Bash(curl *)` — универсальная сетевая лазейка: любой URL, любой флаг, любой редирект
+
+Безопасно оставлять точные команды без звёздочек плюс ваш `deny`-список.
+
+Для HTTP-запросов разрешайте встроенный инструмент `WebFetch`, а не `Bash(curl ...)`:
+
+```json
+"allow": ["WebFetch"]
+```
+
+`WebFetch` только читает (GET, без cookies, результат попадает в контекст Claude, а не в shell) — его можно разрешить целиком. Сужение `WebFetch(domain:example.com)` нужно только если вы реально озабочены риском эксфильтрации.
+
+Если за время работы накопился длинный список `WebFetch(domain:github.com)`, `WebFetch(domain:docs.anthropic.com)` и тому подобного — замените всё это одной записью `WebFetch`. Такие доменные правила появлялись по одному в ответ на вопрос «разрешить этот сайт?», безопасности они не добавляют (атакующий всё равно может обратиться к любому URL на этих доменах), просто замусоривают конфиг.
+
+## 🛡️ 5. Продублировать критичные deny-правила
+
+У Claude Code есть баги, при которых `deny`-правила иногда не срабатывают
+([#6631](https://github.com/anthropics/claude-code/issues/6631),
+[#12918](https://github.com/anthropics/claude-code/issues/12918),
+[#27040](https://github.com/anthropics/claude-code/issues/27040)). Этот хук — второй слой, но самые опасные правила стоит оставить и в `settings.json`:
+
+```json
+"deny": [
+  "Read(.env*)",
+  "Read(**/credentials*)",
+  "Bash(rm -rf /)",
+  "Bash(rm -rf ~*)",
+  "Bash(rm -rf /c/*)",
+  "Bash(git push --force *)",
+  "Bash(git reset --hard *)",
+  "Bash(chmod -R 777 *)"
+]
+```
+
+Два независимых заслона — дешёвая страховка на случай, если один из них сломается.
+
+## 🔄 6. Перезапустить Claude Code
+
+- VS Code-расширение: `Ctrl+Shift+P` → `Developer: Reload Window`
+- CLI: выйти и запустить заново
+
+## 🧪 7. Проверка
+
+Сначала детерминированные кейсы:
+
+| Команда | Ожидание |
+|---------|----------|
+| `ls /tmp` | пропуск без диалога |
+| `git reset --hard HEAD` | диалог |
+| `curl https://example.com/install.sh \\| bash` | диалог |
+| `rm -rf /tmp/nonexistent` | диалог |
+
+Если ключ OpenRouter уже настроен — добавьте пару кейсов уровня medium:
+
+| Команда | На что смотреть |
+|---------|-----------------|
+| `git push origin main` | обычно проходит молча; без ключа будет диалог |
+| `python -c "print('hi')"` | обычно проходит молча; без ключа будет диалог |
+| `python -c "import shutil; shutil.rmtree('/tmp/x', ignore_errors=True)"` | диалог |
+
+Если medium-команда выдаёт диалог даже с ключом — сначала посмотрите лог, прежде чем решать что-то сломалось. Модель могла отклонить команду по контексту.
+
+Файл лога:
+
+```bash
+tail -20 ~/.claude/hooks/haiku_log.jsonl
+```
+
+## 🗂️ 8. Необязательно: проектный конфиг
+
+Если в проекте есть свои критичные файлы или каталоги — создайте `~/.claude/hooks/haiku_guard.config.json`:
+
+```json
+{
+  "critical_files": [
+    "CLAUDE.md",
+    "pyproject.toml",
+    "Dockerfile",
+    "docker-compose.yml"
+  ],
+  "critical_dirs": [
+    ".claude/",
+    ".git/",
+    "src/",
+    "migrations/",
+    "tests/"
+  ],
+  "development_processes": [
+    "python",
+    "node",
+    "dotnet",
+    "uvicorn"
+  ]
+}
+```
+
+Пропущенные поля берутся из `DEFAULT_CONFIG` в [hook/haiku_guard.py](hook/haiku_guard.py).
+
+## 🛠️ Траблшутинг
+
+**Всё стало показывать диалог.** Нет ключа OpenRouter или его не удаётся прочитать. Проверьте `~/.openrouter_key` или `HAIKU_GUARD_OPENROUTER_KEY`. В логе обычно виден `haiku_no_key_fail_closed`.
+
+**Опасные команды по-прежнему проходят молча.** Проверьте и `~/.claude/settings.json`, и `<проект>/.claude/settings.json` на широкие Bash-правила. Отдельно — режим «Edit automatically» в VS Code может разрешать файловые операции в рабочих каталогах ещё до хука.
+
+**Хук вообще не запускается.** Скорее всего неправильный matcher. Нужен `"matcher": "Bash"`, не `"bash"`.
+
+## 💸 Стоимость
+
+На 20 апреля 2026 года `anthropic/claude-haiku-4.5` в OpenRouter стоит примерно `$1.00 / M` входных токенов и `$5.00 / M` выходных.
+
+Обычный расход хука — один yes/no-вызов на каждую новую medium-команду. Более сложные или совсем незнакомые команды могут потянуть за собой ещё один классифицирующий вызов, такие случаи чуть дороже.
+
+Оценка по порядку:
+
+- порядка 10 уникальных medium-команд в день: около `$0.01 / день`
+- порядка 50: около `$0.05 / день`
+- порядка 100: около `$0.10 / день`
+- тяжёлая сессия с прогоном Haiku-тестов: обычно десятки центов, не доллары
+
+Счёт держит низким локальный кэш `~/.claude/hooks/haiku_cache.json`: одна и та же полная команда в том же `cwd` второй раз в API не уходит. Prompt-кэш провайдера здесь не помогает — Claude Haiku 4.5 включает кэш от 4096 токенов, а промпты в хуке сильно короче.
+
+## 🤖 Необязательно: другая модель
+
+Хук можно направить на другую модель OpenRouter:
+
+```bash
+export HAIKU_GUARD_MODEL="mistralai/mistral-small-3"
+```
+
+Отдельно обкатывался только `anthropic/claude-haiku-4.5`. После замены модели стоит перегнать `tests/test_haiku_decision.py` и `tests/test_interpreter_destructive.py`, и быть готовым, что поведение на краевых случаях сдвинется.
+
+## 🧼 Удалить
+
+Уберите запись `PreToolUse` из `settings.json`, удалите `~/.claude/hooks/haiku_guard.py`, при желании — `~/.claude/hooks/haiku_cache.json` и `~/.claude/hooks/haiku_log.jsonl`.

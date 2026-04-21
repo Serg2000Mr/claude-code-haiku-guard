@@ -2,6 +2,8 @@
 
 This guide gets the guard working first. Optional model tuning comes later.
 
+> [Русская версия →](SETUP.ru.md)
+
 ## 🔑 1. Create an OpenRouter key
 
 The guard calls OpenRouter, so an OpenAI or Anthropic key will not work here.
