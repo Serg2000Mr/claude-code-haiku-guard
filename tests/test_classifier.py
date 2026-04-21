@@ -30,6 +30,9 @@ CASES = [
     ("docker ps",                       "none", "docker read-only"),
     ("cd /tmp",                         "none", "navigate"),
     ("git push --dry-run",              "none", "simulation"),
+    ("tasklist",                        "none", "Windows tasklist"),
+    ("netstat -ano",                    "none", "netstat"),
+    ("whoami",                          "none", "system info"),
 
     # Benign mutating — easy to roll back
     ("npm install lodash",              "low",  "install package"),

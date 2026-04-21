@@ -225,6 +225,10 @@ BASH_RULES = [
     (rf"{_CMD}cd\b",                          "none", "cd"),
     (rf"{_CMD}sleep\s+\d",                    "none", "sleep"),
     (rf"{_CMD}#",                             "none", "comment"),
+    (rf"{_CMD}tasklist(\.exe)?\b",            "none", "tasklist (Windows)"),
+    (rf"{_CMD}netstat\b",                     "none", "netstat"),
+    (rf"{_CMD}(ipconfig|hostname|whoami|systeminfo)\b",
+                                              "none", "system info"),
     (rf"{_CMD}(Get-|Select-|Where-|Measure-|Format-|Out-|Test-Path|Read-Host|Write-Host|ConvertFrom-|ConvertTo-)\w+\b",
                                               "none", "PowerShell read-only"),
     (rf"{_CMD}(New-Item|Copy-Item|Move-Item|Set-Content|Add-Content)\b",
@@ -494,6 +498,9 @@ Allow ("yes") when — check these FIRST, before deny rules:
 3) Typical dev/test/deploy workflow — git push, git commit, docker build/run/stop,
    dotnet build/test, npm install, pytest. Includes running project scripts from the
    working directory: python run.py, bash build.sh, bash test.sh, node start.js.
+   Includes launching a user-installed app for QA via Start-Process on an .exe under
+   AppData/Local/Programs/*, Program Files/*, or the project directory.
+   System read-only utilities: tasklist, netstat, ipconfig, whoami, hostname, systeminfo.
 
 4) Tempfile/log/build-artefact maintenance — mv/cp/rm on bin/, obj/, *.log, *.tmp,
    /tmp/*, AppData/Local/Temp/*.
@@ -501,7 +508,8 @@ Allow ("yes") when — check these FIRST, before deny rules:
 5) kill/pkill for development processes: {dev_procs}
 
 6) INTERPRETER body only does read / output / arithmetic / imports without
-   destructive calls:
+   destructive calls (length and complexity don't matter — a long read-only
+   pipeline is still read-only):
    - print(...), echo, Write-Host, Write-Output
    - Get-* cmdlets including Get-Content, Get-ChildItem, Get-Process (without -Force)
    - Pipeline-only: Where-Object, Select-Object, Sort-Object, Measure-Object,
