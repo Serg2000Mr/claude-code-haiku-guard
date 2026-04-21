@@ -254,6 +254,9 @@ def _has_write_redirect(command: str) -> bool:
     """True when command writes output to a real file via > or >>."""
     s = re.sub(r'"[^"]*"', '""', command)
     s = re.sub(r"'[^']*'", "''", s)
+    # echo "" > path — empty file creation, equivalent to touch
+    if re.match(r'^\s*echo\s+""\s*>>?\s*\S', s):
+        return False
     return bool(re.search(r'\s>>?\s+(?!/dev/null\b)\S', s))
 
 
