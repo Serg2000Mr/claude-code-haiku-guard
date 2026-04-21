@@ -4,6 +4,13 @@ All notable user-visible changes live here. For the full commit history see `git
 
 ## 2026-04-21
 
+### Catastrophic command intercept
+- `rm -rf /`, `rm -rf ~`, `dd of=/dev/sd*`, `mkfs /dev/sd*`, fork bomb, `chmod -R 777 /` are intercepted before they reach the user dialog.
+- The dangerous command is replaced with a harmless `echo` via the `updatedInput` field, then surfaced as `ask`. Even an accidental Yes click cannot cause damage.
+- A modal MessageBox (error icon, SYSTEMMODAL) appears: the agent cannot continue until the user acknowledges.
+- `additionalContext` injects a strong stop-directive into the agent's context: "stop, acknowledge to user, wait for explicit instructions, do not attempt workarounds".
+- `permissionDecisionReason` tells the user what was replaced and why.
+
 ### New
 - **Reason exposed in the permission decision** — Haiku now returns `{"verdict":"yes|no","reason":"..."}`. The reason appears in `permissionDecisionReason` that Claude Code logs, and in the local `haiku_log.jsonl`. Makes false positives much easier to debug.
 - **Custom verifier hook** — set `HAIKU_GUARD_VERIFIER_CMD` to a shell command that receives `{command, cwd, danger, description}` on stdin and returns `{"allow": bool, "reason": "..."}` on stdout. Lets you swap Haiku for your own model, a stricter ruleset, Codex, etc. See SETUP.md.
