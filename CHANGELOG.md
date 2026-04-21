@@ -2,6 +2,13 @@
 
 All notable user-visible changes live here. For the full commit history see `git log`.
 
+## 2026-04-22
+
+### Read tool coverage
+- New `Read` matcher in the default `settings.json` — the hook now auto-allows reads of normal files and surfaces a dialog only for sensitive paths.
+- Sensitive-path patterns: `.env*`, `.ssh/`, `.aws/`, `.gnupg/`, `*credentials*`, `*secrets*`, `*.pem`, `*.key`, `*.pfx`, `*.p12`, `*_token*`, `id_rsa`/`id_ed25519`, `.netrc`.
+- Removes the recurring "Allow reading from X?" prompts that Claude Code shows for every new directory.
+
 ## 2026-04-21
 
 ### Catastrophic command intercept

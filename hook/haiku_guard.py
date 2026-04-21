@@ -698,10 +698,40 @@ def ask_haiku(tool_name: str, tool_input: dict, desc: str, danger: str) -> tuple
 # Tool description (non-Bash tools)
 # -----------------------------------------------------------------------------
 
+# Sensitive paths — reading these requires user confirmation even though
+# Read is otherwise harmless. Patterns are case-insensitive.
+SENSITIVE_READ_PATTERNS = [
+    r"(?:^|[/\\])\.env(?:\.|$|[/\\])",           # .env, .env.local, .env/
+    r"(?:^|[/\\])\.ssh[/\\]",                    # .ssh/
+    r"(?:^|[/\\])\.gnupg[/\\]",                  # .gnupg/
+    r"(?:^|[/\\])\.aws[/\\]",                    # .aws/credentials
+    r"(?:^|[/\\])credentials?(?:[._]|$)",        # credentials*, credential*
+    r"(?:^|[/\\])secrets?(?:[._]|$)",            # secrets*, secret*
+    r"\.pem$", r"\.key$", r"\.pfx$", r"\.p12$",  # certs
+    r"[._-]token(?:[._-]|$)",                    # *_token*, *-token*
+    r"id_(?:rsa|ed25519|ecdsa|dsa)(?:\.pub)?$",  # ssh keys
+    r"[/\\]\.netrc$",                            # .netrc
+]
+
+
+def _is_sensitive_read(path: str) -> bool:
+    p = (path or "").lower().replace("\\", "/")
+    for pat in SENSITIVE_READ_PATTERNS:
+        if re.search(pat, p, re.IGNORECASE):
+            return True
+    return False
+
+
 def describe(tool_name: str, tool_input: dict):
     try:
         if tool_name == "Bash":
             return describe_bash(str(tool_input.get("command", "") or ""))
+        if tool_name == "Read":
+            path = str(tool_input.get("file_path", "?"))
+            fn = os.path.basename(path)
+            if _is_sensitive_read(path):
+                return f"read sensitive: {fn}", "high"
+            return f"read {fn}", "none"
         if tool_name == "Write":
             fn = os.path.basename(str(tool_input.get("file_path", "?")))
             return f"write {fn}", "low"

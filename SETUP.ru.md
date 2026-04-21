@@ -60,13 +60,28 @@ echo '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command"
             "timeout": 70
           }
         ]
+      },
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python ~/.claude/hooks/haiku_guard.py",
+            "timeout": 15
+          }
+        ]
       }
     ]
   }
 }
 ```
 
-Рабочий путь здесь — `PreToolUse` с matcher по `Bash`. Скрипт понимает и `PermissionRequest`, но для обычной классификации используется `PreToolUse`.
+Два matcher-а:
+
+- **Bash** — полная классификация с Haiku для medium-команд.
+- **Read** — автоматически пропускает чтение обычных файлов; диалог показывается только для чувствительных путей (`.env*`, `.ssh/`, `.aws/`, `*credentials*`, `*.pem`, `*.key`, токены). Убирает вечные диалоги «Allow reading from X?» для каждой новой директории, где агент открывает файл.
+
+Скрипт понимает и `PermissionRequest`, но для обычной классификации используется `PreToolUse`.
 
 Даже с подключённым `PreToolUse` нужно вычистить широкие Bash-правила и в глобальных, и в проектных настройках. Иначе Claude Code разрешит команду по широкому правилу раньше, чем хук успеет что-то сказать.
 

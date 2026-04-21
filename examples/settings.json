@@ -1,8 +1,7 @@
 {
   "permissions": {
     "allow": [
-      "WebFetch(domain:github.com)",
-      "WebFetch(domain:docs.anthropic.com)"
+      "WebFetch"
     ],
     "deny": [
       "Read(.env*)",
@@ -11,7 +10,10 @@
       "Read(**/*.key)",
       "Bash(rm -rf /)",
       "Bash(rm -rf ~)",
-      "Bash(rm -rf ~/*)"
+      "Bash(rm -rf ~/*)",
+      "Bash(git push --force *)",
+      "Bash(git reset --hard *)",
+      "Bash(chmod -R 777 *)"
     ]
   },
   "hooks": {
@@ -23,6 +25,16 @@
             "type": "command",
             "command": "python ~/.claude/hooks/haiku_guard.py",
             "timeout": 70
+          }
+        ]
+      },
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python ~/.claude/hooks/haiku_guard.py",
+            "timeout": 15
           }
         ]
       }

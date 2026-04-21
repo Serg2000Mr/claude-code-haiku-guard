@@ -60,13 +60,28 @@ Merge the `hooks` block from [examples/settings.json](examples/settings.json) in
             "timeout": 70
           }
         ]
+      },
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python ~/.claude/hooks/haiku_guard.py",
+            "timeout": 15
+          }
+        ]
       }
     ]
   }
 }
 ```
 
-Use a Bash-scoped `PreToolUse` hook for the main flow in this repo. The script also understands `PermissionRequest`, but `PreToolUse` is the path you want for normal Bash classification.
+Two matchers:
+
+- **Bash** — full classification with Haiku for medium-risk commands.
+- **Read** — auto-allows reads of normal files; surfaces a dialog only for sensitive paths (`.env*`, `.ssh/`, `.aws/`, `*credentials*`, `*.pem`, `*.key`, tokens). This removes the "Allow reading from X?" prompts for every new directory Claude opens a file in.
+
+The script also understands `PermissionRequest`, but `PreToolUse` is the path you want for normal classification.
 
 Even with `PreToolUse`, you should still remove broad Bash allow rules from both global and project settings. Otherwise Claude Code can approve commands so broadly that this guard stops being useful.
 
