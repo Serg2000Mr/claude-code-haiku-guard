@@ -203,6 +203,7 @@ BASH_RULES = [
     (rf"{_CMD}(python|python3|py)\s+-m\s+\w+",        "medium", "python -m module"),
     (rf"{_CMD}(python|python3|py)\b",                 "medium", "python script"),
     (rf"{_CMD}node\s+-e\b",                           "medium", "node -e arbitrary code"),
+    (rf"{_CMD}node\s+(--check|--version|-v)\b",       "none",   "node check/version"),
     (rf"{_CMD}node\b",                                "medium", "node script"),
     (rf"{_CMD}bash\s+-c\b",                           "medium", "bash -c arbitrary code"),
     (rf"{_CMD}bash\s+",                               "medium", "bash script"),
@@ -504,7 +505,7 @@ Allow ("yes") when — check these FIRST, before deny rules:
    - print(...), echo, Write-Host, Write-Output
    - Get-* cmdlets including Get-Content, Get-ChildItem, Get-Process (without -Force)
    - Pipeline-only: Where-Object, Select-Object, Sort-Object, Measure-Object,
-     Group-Object, Format-Table, Format-List, Out-String, Out-Host
+     Group-Object, ForEach-Object, Format-Table, Format-List, Out-String, Out-Host
    - ConvertFrom-Json, ConvertTo-Json, ConvertFrom-Csv and other Convert* cmdlets
    - Variable assignment ($var = ...) when the right side is read-only
    - Hash tables @{{...}} and script blocks {{$_.prop}} used with Select-Object/Where-Object
