@@ -1042,6 +1042,56 @@ def _is_sensitive_read(path: str) -> bool:
     return False
 
 
+# Self-protected paths: hook guard's own config and all .claude hook/settings
+# files. Writes here by the agent almost always indicate a supply-chain or
+# prompt-injection attempt — never a legitimate refactor.
+_SELF_PROTECTED_PATTERNS = [
+    r"[/\\]\.claude[/\\]settings(?:\.local)?\.json$",
+    r"[/\\]\.claude[/\\]hooks[/\\]",
+    r"[/\\]\.claude[/\\]haiku_guard\.config\.json$",
+]
+
+
+def _is_self_protected(path: str) -> bool:
+    p = (path or "").replace("\\", "/").lower()
+    return any(re.search(pat, p, re.IGNORECASE) for pat in _SELF_PROTECTED_PATTERNS)
+
+
+def _is_critical_write(path: str, cfg: dict) -> bool:
+    """Match path against effective critical_files / critical_dirs. fnmatch
+    supports the `*.csproj` / `docker-compose.yml` style used in config."""
+    import fnmatch
+    p = (path or "").replace("\\", "/")
+    basename = os.path.basename(p)
+    for pattern in cfg.get("critical_files") or []:
+        if fnmatch.fnmatch(basename, pattern) or fnmatch.fnmatch(p, pattern):
+            return True
+    for dir_pat in (cfg.get("critical_dirs") or []):
+        tag = dir_pat.rstrip("/").lstrip("/")
+        if not tag:
+            continue
+        if f"/{tag}/" in "/" + p.lstrip("/") + "/":
+            return True
+    return False
+
+
+def _classify_write(path: str, content: str, cfg: dict) -> tuple[str, str]:
+    """Classify a Write/Edit into a (desc, danger) pair.
+    Priority: sensitive > self-protected > content-contains-secret > critical > default."""
+    fn = os.path.basename(path or "?")
+    if _is_sensitive_read(path):
+        return f"write sensitive: {fn}", "high"
+    if _is_self_protected(path):
+        return f"write self-protected: {fn}", "high"
+    if content:
+        secrets = _scan_secrets(content)
+        if secrets:
+            return f"write contains {', '.join(secrets)}: {fn}", "high"
+    if _is_critical_write(path, cfg):
+        return f"write critical: {fn}", "medium"
+    return f"write {fn}", "low"
+
+
 def describe(tool_name: str, tool_input: dict):
     try:
         if tool_name == "Bash":
@@ -1053,11 +1103,21 @@ def describe(tool_name: str, tool_input: dict):
                 return f"read sensitive: {fn}", "high"
             return f"read {fn}", "none"
         if tool_name == "Write":
-            fn = os.path.basename(str(tool_input.get("file_path", "?")))
-            return f"write {fn}", "low"
-        if tool_name == "Edit":
-            fn = os.path.basename(str(tool_input.get("file_path", "?")))
-            return f"edit {fn}", "low"
+            path = str(tool_input.get("file_path", "?"))
+            content = str(tool_input.get("content") or "")
+            return _classify_write(path, content, _load_config())
+        if tool_name in ("Edit", "MultiEdit"):
+            path = str(tool_input.get("file_path", "?"))
+            # Edit exposes new_string; MultiEdit has edits[].new_string
+            new_text = str(tool_input.get("new_string") or "")
+            if not new_text:
+                for e in tool_input.get("edits") or []:
+                    new_text += str((e or {}).get("new_string") or "") + "\n"
+            return _classify_write(path, new_text, _load_config())
+        if tool_name == "NotebookEdit":
+            path = str(tool_input.get("notebook_path", "?"))
+            new_text = str(tool_input.get("new_source") or "")
+            return _classify_write(path, new_text, _load_config())
         if tool_name == "WebFetch":
             url = str(tool_input.get("url", "?"))
             host = re.sub(r"^https?://", "", url).split("/")[0][:30]

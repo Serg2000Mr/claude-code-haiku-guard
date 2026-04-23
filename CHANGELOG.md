@@ -4,6 +4,14 @@ All notable user-visible changes live here. For the full commit history see `git
 
 ## 2026-04-22
 
+### Extended Write / Edit coverage
+- Write / Edit / MultiEdit / NotebookEdit are no longer a flat `low` — they are classified against four layers:
+  - **Sensitive path** (`.env*`, `.ssh/`, `.aws/`, `*credentials*`, `*.pem`, `*.key`, tokens) → `high` / dialog.
+  - **Self-protected** — writes to `~/.claude/settings(.local).json`, `~/.claude/hooks/`, `haiku_guard.config.json` → `high` / dialog. A legitimate refactor almost never touches these; unexpected writes here are a supply-chain / prompt-injection signal.
+  - **Content-scan** — the `content` / `new_string` payload is run through the secret scanner. Writing `AKIA…`, `ghp_…`, a PEM block, etc. into a source file is blocked with a specific reason.
+  - **Critical artefact** from effective config (`package.json`, `Dockerfile`, `*.csproj`, ...) → `medium` / Haiku decides with project context.
+- Everything else stays `low` / silent allow.
+
 ### Secret scanner on UserPromptSubmit
 - New `UserPromptSubmit` hook entry blocks submission of any prompt that contains a recognisable credential before it reaches the model or OpenRouter.
 - Detected kinds: AWS access/temp keys, GitHub PAT (classic + fine-grained), Anthropic API, OpenAI API, OpenRouter key, Slack, Stripe (live + test), Google API, JWT, private-key PEM blocks.
