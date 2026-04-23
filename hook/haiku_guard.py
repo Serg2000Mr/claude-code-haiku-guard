@@ -149,6 +149,91 @@ def _load_config() -> dict:
 
 
 # -----------------------------------------------------------------------------
+# Action type taxonomy (semantic annotation, no policy change)
+# -----------------------------------------------------------------------------
+# Lightweight classification of what a rule-match *does*, derived from the
+# rule's human description. Attached to the Haiku context and the log so
+# downstream layers (or users inspecting haiku_log.jsonl) can filter/count
+# by action rather than by command name. Not a replacement for risk level.
+
+ACTION_TYPES = (
+    "filesystem_read",     # ls, cat, Get-Content, etc.
+    "filesystem_write",    # mv, cp, Set-Content, touch, mkdir
+    "filesystem_delete",   # rm, Remove-Item, rmdir
+    "network_fetch",       # curl, wget, fetch
+    "download_execute",    # curl | bash — composition pattern
+    "lang_exec",           # python -c, bash -c, node -e, powershell -Command, generic script run
+    "version_control",     # git commit, git push, git pull — generic vc
+    "history_rewrite",     # git push --force, git reset --hard, git rebase, git commit --amend
+    "package_manage",      # npm install, pip install, docker pull
+    "container",           # docker run/build/stop/kill
+    "process_signal",      # kill, pkill, taskkill
+    "permission_change",   # chmod, chown, icacls
+    "system_info",         # tasklist, netstat, whoami, uname
+    "shell_builtin",       # cd, pwd, echo, sleep
+    "interpreter_check",   # node --check, python -V, --dry-run, --help
+    "shutdown",            # shutdown, halt, poweroff
+    "db_admin",            # drop table, truncate, mkfs
+)
+
+
+def _action_type(desc: str) -> str | None:
+    """Infer action type from a rule's human description. Keyword-based,
+    cheap, and easy to maintain — rule descriptions are stable."""
+    if not desc:
+        return None
+    d = desc.lower()
+    # Order matters — more specific patterns first.
+    if "download and execute" in d:
+        return "download_execute"
+    if "fork bomb" in d or "arbitrary code" in d or "python -c" in d or "bash -c" in d \
+       or "node -e" in d or "powershell" in d or "script" in d or "-m " in d \
+       or "run/exec" in d or "dotnet run" in d:
+        return "lang_exec"
+    if "force" in d or "reset --hard" in d or "hard reset" in d or "amend" in d \
+       or "rebase" in d or "history" in d:
+        return "history_rewrite"
+    if "shutdown" in d or "перезагрузка" in d or "poweroff" in d or "halt" in d \
+       or "power off" in d:
+        return "shutdown"
+    if "mkfs" in d or "drop" in d or "truncate" in d or "fs format" in d \
+       or "format disk" in d:
+        return "db_admin"
+    if "chmod" in d or "chown" in d or "permission" in d or "icacls" in d:
+        return "permission_change"
+    if "kill" in d or "pkill" in d or "taskkill" in d or "signal" in d:
+        return "process_signal"
+    if "install" in d or "uninstall" in d or "package" in d or "pull" in d or "download" in d:
+        return "package_manage"
+    if "container" in d or "docker" in d or "compose" in d:
+        return "container"
+    if "merge pr" in d or "pull request" in d:
+        return "version_control"
+    if "build" in d or "compile" in d:
+        return "package_manage"
+    if "tasklist" in d or "netstat" in d or "system info" in d or "процесс" in d and "список" in d:
+        return "system_info"
+    if "delete" in d or "remove" in d or "rm " in d or " rm" in d:
+        return "filesystem_delete"
+    if "check" in d or "version" in d or "dry-run" in d or "pytest" in d or "test" in d:
+        return "interpreter_check"
+    if "read-only" in d or "simulation" in d or "navigate" in d or "view" in d or "status" in d:
+        return "filesystem_read"
+    if "fetch" in d or "http" in d or "network" in d:
+        return "network_fetch"
+    if "git " in d:
+        return "version_control"
+    if "arbitrary code" in d or "python -c" in d or "bash -c" in d or "node -e" in d \
+       or "powershell" in d or "script" in d:
+        return "lang_exec"
+    if "write" in d or "create" in d or "mkdir" in d or "copy" in d or "touch" in d or "move" in d:
+        return "filesystem_write"
+    if "cd" in d or "pause" in d or "comment" in d or "placeholder" in d or "sleep" in d:
+        return "shell_builtin"
+    return None
+
+
+# -----------------------------------------------------------------------------
 # Logging
 # -----------------------------------------------------------------------------
 
@@ -879,7 +964,9 @@ def ask_haiku(tool_name: str, tool_input: dict, desc: str, danger: str) -> tuple
         return (False, "no OpenRouter key")
 
     cfg = _load_config()
-    user_msg = f"Tool: {tool_name}\nCWD: {cwd}\nCommand: {cmd}\nDescription: {desc}\nLevel: {danger}"
+    action = _action_type(desc) or "unclassified"
+    user_msg = (f"Tool: {tool_name}\nCWD: {cwd}\nCommand: {cmd}\n"
+                f"Description: {desc}\nAction: {action}\nLevel: {danger}")
     body = json.dumps({
         "model": LLM_MODEL,
         "messages": [
@@ -1118,6 +1205,7 @@ def main() -> None:
         "event": event_name,
         "tool": tool_name,
         "desc": desc,
+        "action": _action_type(desc),
         "danger": danger,
         "cmd_preview": str(
             tool_input.get("command") or tool_input.get("file_path") or tool_input.get("url") or ""

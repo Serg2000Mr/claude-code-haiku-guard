@@ -4,6 +4,11 @@ All notable user-visible changes live here. For the full commit history see `git
 
 ## 2026-04-22
 
+### Lightweight action type taxonomy
+- 17 action types: `filesystem_read` / `filesystem_write` / `filesystem_delete`, `network_fetch`, `download_execute`, `lang_exec`, `version_control`, `history_rewrite`, `package_manage`, `container`, `process_signal`, `permission_change`, `system_info`, `shell_builtin`, `interpreter_check`, `shutdown`, `db_admin`.
+- Every rule match is annotated with an action type and passed both to the Haiku decision prompt (as a structured signal alongside `Level:`) and into the `haiku_log.jsonl` log. Makes it possible to filter/count decisions by semantic intent later.
+- No policy change — purely additive annotation. 100% of the 68 current rules map to an action type.
+
 ### Project-local config with tighten-only policy
 - New `<CLAUDE_PROJECT_DIR>/.claude/haiku_guard.config.json` is loaded alongside the global config and anchored to the session-stable project root, **not** to `cwd` — `cd` inside the session cannot swap policies.
 - Project config can only tighten:
