@@ -1295,11 +1295,14 @@ def _handle_user_prompt_submit(payload: dict) -> None:
     log_event({"phase": "secret_detected", "labels": secrets,
                "prompt_len": len(prompt)})
     _notify(
-        "Haiku Guard — secret blocked in prompt",
+        "Haiku Guard — prompt blocked",
         "ATTENTION!\n\n"
-        f"Detected in the user prompt: {labels}\n\n"
-        "The prompt has been blocked from reaching the model.\n"
-        "Remove the secret, then resubmit.",
+        "Your last prompt was NOT sent to Claude Code.\n\n"
+        "It contained a credential that could leak into\n"
+        "model provider logs if sent. The guard blocked it.\n\n"
+        "What to do: remove the credential from your prompt\n"
+        "and resubmit.\n\n"
+        f"Detected: {labels}",
         icon="error",
     )
     out = {"hookSpecificOutput": {
