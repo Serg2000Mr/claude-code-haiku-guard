@@ -4,6 +4,14 @@ All notable user-visible changes live here. For the full commit history see `git
 
 ## 2026-04-22
 
+### Project-local config with tighten-only policy
+- New `<CLAUDE_PROJECT_DIR>/.claude/haiku_guard.config.json` is loaded alongside the global config and anchored to the session-stable project root, **not** to `cwd` — `cd` inside the session cannot swap policies.
+- Project config can only tighten:
+  - `critical_files` / `critical_dirs` — union with global (project adds protected entries)
+  - `development_processes` — intersection with global (project can remove "safe" entries)
+- Supply-chain guardrail: a cloned malicious repo cannot weaken your defaults via its own config.
+- Escape hatch: set `"trust_project_config": true` in the **global** config (ignored in project) to let project values fully replace global.
+
 ### Optional shfmt AST backend
 - When `shfmt` is on `PATH` (or `HAIKU_GUARD_SHFMT` points to it), compound commands are parsed into an AST before classification. Segments, composition detection and `download | interpreter` patterns are derived from the AST instead of a flat regex split.
 - Catches obfuscation the regex missed: `curl url | "/bin/ba"sh` (quote-concat), `curl $(echo url) | bash` (nested substitution), pipes inside `$()` / subshells / here-docs.

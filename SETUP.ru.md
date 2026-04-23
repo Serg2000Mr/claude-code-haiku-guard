@@ -173,35 +173,47 @@ echo '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command"
 tail -20 ~/.claude/hooks/haiku_log.jsonl
 ```
 
-## 🗂️ 8. Необязательно: проектный конфиг
+## 🗂️ 8. Необязательно: конфиг
 
-Если в проекте есть свои критичные файлы или каталоги — создайте `~/.claude/hooks/haiku_guard.config.json`:
+Два уровня конфига, оба опциональны:
+
+### Глобальный — `~/.claude/hooks/haiku_guard.config.json`
+
+Значения для машины (перекрывают defaults):
 
 ```json
 {
-  "critical_files": [
-    "CLAUDE.md",
-    "pyproject.toml",
-    "Dockerfile",
-    "docker-compose.yml"
-  ],
-  "critical_dirs": [
-    ".claude/",
-    ".git/",
-    "src/",
-    "migrations/",
-    "tests/"
-  ],
-  "development_processes": [
-    "python",
-    "node",
-    "dotnet",
-    "uvicorn"
-  ]
+  "critical_files": ["CLAUDE.md", "pyproject.toml", "Dockerfile"],
+  "critical_dirs":  [".claude/", ".git/", "src/", "migrations/"],
+  "development_processes": ["python", "node", "dotnet", "uvicorn"],
+  "trust_project_config": false
 }
 ```
 
 Пропущенные поля берутся из `DEFAULT_CONFIG` в [hook/haiku_guard.py](hook/haiku_guard.py).
+
+### Проектный — `<project>/.claude/haiku_guard.config.json`
+
+Ищется относительно `CLAUDE_PROJECT_DIR` (session-stable project root, который Claude Code выставляет один раз на сессию), **не** относительно текущего `cwd`. `cd` внутри сессии не переключает политику, вложенные репозитории не меняют, какой конфиг действует.
+
+**Проектный конфиг может только ужесточать глобальную политику, но не ослаблять.** Это supply-chain-гарантия — клонированный вредный репозиторий не сможет понизить ваши default-ы собственным конфигом:
+
+- `critical_files` / `critical_dirs` — **UNION** с глобальным. Проект может добавлять защищённые элементы, но не удалять.
+- `development_processes` — **INTERSECTION**. Проект может убирать процессы из списка «безопасно убить», но не добавлять новые «безопасные».
+- `trust_project_config` — **только глобально**, в проекте игнорируется.
+
+Если нужно, чтобы проект реально перекрывал глобальный конфиг (например, в sandbox-VM, где кодовой базе доверяете) — поставьте `"trust_project_config": true` в **глобальном** конфиге. В этом режиме проектные значения полностью заменяют глобальные по каждому заданному ключу.
+
+Пример `<project>/.claude/haiku_guard.config.json`:
+
+```json
+{
+  "critical_files": ["terraform.tfstate", "secrets.enc.yaml"],
+  "critical_dirs":  ["k8s/", "infra/"]
+}
+```
+
+При дефолтном глобальном это добавит state Terraform и зашифрованные секреты к защищённому набору, ничего остального не тронув.
 
 ## 🛠️ Траблшутинг
 

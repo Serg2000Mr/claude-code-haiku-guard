@@ -173,35 +173,47 @@ Log file:
 tail -20 ~/.claude/hooks/haiku_log.jsonl
 ```
 
-## 🗂️ 8. Optional: project-specific config
+## 🗂️ 8. Optional: config
 
-If your project has its own critical files or directories, create `~/.claude/hooks/haiku_guard.config.json`:
+There are two levels of config, both optional:
+
+### Global — `~/.claude/hooks/haiku_guard.config.json`
+
+Fills in or overrides defaults for the machine:
 
 ```json
 {
-  "critical_files": [
-    "CLAUDE.md",
-    "pyproject.toml",
-    "Dockerfile",
-    "docker-compose.yml"
-  ],
-  "critical_dirs": [
-    ".claude/",
-    ".git/",
-    "src/",
-    "migrations/",
-    "tests/"
-  ],
-  "development_processes": [
-    "python",
-    "node",
-    "dotnet",
-    "uvicorn"
-  ]
+  "critical_files": ["CLAUDE.md", "pyproject.toml", "Dockerfile"],
+  "critical_dirs":  [".claude/", ".git/", "src/", "migrations/"],
+  "development_processes": ["python", "node", "dotnet", "uvicorn"],
+  "trust_project_config": false
 }
 ```
 
 Missing fields fall back to `DEFAULT_CONFIG` in [hook/haiku_guard.py](hook/haiku_guard.py).
+
+### Project-local — `<project>/.claude/haiku_guard.config.json`
+
+Anchored to `CLAUDE_PROJECT_DIR` (the session-stable project root Claude Code sets), **not** to the current working directory. `cd` inside the session cannot swap policies mid-flight, nested repos do not change which config is effective.
+
+**Project config can only tighten the global policy, not relax it.** This is the supply-chain guardrail — a cloned malicious repo cannot weaken your defaults by shipping its own config:
+
+- `critical_files` / `critical_dirs` — **UNION** with global. Project can add more protected entries, never remove.
+- `development_processes` — **INTERSECTION** with global. Project can remove entries it does not consider safe to kill, never add new ones.
+- `trust_project_config` — **global only**, ignored if set in project.
+
+If you genuinely need a project to override the global policy (for example, in a sandbox VM where you trust the codebase you cloned), set `"trust_project_config": true` in the **global** config. When `true`, project values fully replace global for each provided key.
+
+Example `<project>/.claude/haiku_guard.config.json`:
+
+```json
+{
+  "critical_files": ["terraform.tfstate", "secrets.enc.yaml"],
+  "critical_dirs":  ["k8s/", "infra/"]
+}
+```
+
+With the global default, this adds Terraform state and encrypted secrets to the protected set without touching anything else.
 
 ## 🛠️ Troubleshooting
 

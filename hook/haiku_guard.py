@@ -44,7 +44,8 @@ LLM_MODEL = os.environ.get("HAIKU_GUARD_MODEL", "anthropic/claude-haiku-4.5")
 LLM_TIMEOUT_SEC = int(os.environ.get("HAIKU_GUARD_TIMEOUT", "15"))
 CACHE_FILE = os.path.expanduser("~/.claude/hooks/haiku_cache.json")
 LOG_FILE = os.path.expanduser("~/.claude/hooks/haiku_log.jsonl")
-CONFIG_FILE = os.path.expanduser("~/.claude/hooks/haiku_guard.config.json")
+GLOBAL_CONFIG_FILE = os.path.expanduser("~/.claude/hooks/haiku_guard.config.json")
+CONFIG_FILE = GLOBAL_CONFIG_FILE  # backward-compat alias
 NOTIFY_LOCK = os.path.expanduser("~/.claude/hooks/haiku_notify.lock")
 _NOTIFY_COOLDOWN_SEC = 1800  # show at most once per 30 minutes
 
@@ -62,18 +63,89 @@ DEFAULT_CONFIG = {
     "development_processes": [
         "dotnet", "node", "python", "code", "ruby", "java",
     ],
+    # Global-only: if true, project-local config fully replaces global.
+    # Default false — project-local can only tighten (see _merge_configs).
+    "trust_project_config": False,
 }
 
 
-def _load_config() -> dict:
+def _project_dir() -> str | None:
+    """Session-stable project root. Uses CLAUDE_PROJECT_DIR env var, which
+    Claude Code sets once per session and does NOT change on `cd`.
+    Returns None if the variable is absent or does not point to a directory."""
+    d = os.environ.get("CLAUDE_PROJECT_DIR", "").strip()
+    if d and os.path.isdir(d):
+        return d
+    return None
+
+
+def _load_global_config() -> dict:
     try:
-        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+        with open(GLOBAL_CONFIG_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
         out = {**DEFAULT_CONFIG}
         out.update({k: v for k, v in data.items() if k in DEFAULT_CONFIG})
         return out
     except Exception:
-        return DEFAULT_CONFIG
+        return dict(DEFAULT_CONFIG)
+
+
+def _load_project_config() -> dict:
+    """Load project-local config from <CLAUDE_PROJECT_DIR>/.claude/haiku_guard.config.json.
+    Returns empty dict if the project dir or file is missing, or JSON is invalid.
+    The file must live under the session-stable root so `cd` inside the session
+    cannot swap policies mid-flight."""
+    pd = _project_dir()
+    if not pd:
+        return {}
+    path = os.path.join(pd, ".claude", "haiku_guard.config.json")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return {k: v for k, v in data.items() if k in DEFAULT_CONFIG
+                and k != "trust_project_config"}
+    except Exception:
+        return {}
+
+
+def _merge_configs(global_cfg: dict, project_cfg: dict, trust: bool) -> dict:
+    """Merge global + project-local config. Default is tighten-only:
+    - critical_files / critical_dirs: UNION (project adds more protected entries)
+    - development_processes: INTERSECTION (project can remove entries it does
+      not consider safe-to-kill, but cannot add new "safe" processes)
+    When `trust` is True, project fully replaces global for each provided key.
+    This makes supply-chain attacks via a malicious project config ineffective
+    unless the user explicitly opts out with `trust_project_config: true`."""
+    out = dict(global_cfg)
+    if not project_cfg:
+        return out
+    if trust:
+        for k in ("critical_files", "critical_dirs", "development_processes"):
+            if k in project_cfg:
+                out[k] = list(project_cfg[k])
+        return out
+    if "critical_files" in project_cfg:
+        merged = set(global_cfg.get("critical_files") or [])
+        merged.update(project_cfg["critical_files"] or [])
+        out["critical_files"] = sorted(merged)
+    if "critical_dirs" in project_cfg:
+        merged = set(global_cfg.get("critical_dirs") or [])
+        merged.update(project_cfg["critical_dirs"] or [])
+        out["critical_dirs"] = sorted(merged)
+    if "development_processes" in project_cfg:
+        global_set = set(global_cfg.get("development_processes") or [])
+        project_set = set(project_cfg["development_processes"] or [])
+        out["development_processes"] = sorted(global_set & project_set)
+    return out
+
+
+def _load_config() -> dict:
+    global_cfg = _load_global_config()
+    project_cfg = _load_project_config()
+    if not project_cfg:
+        return global_cfg
+    trust = bool(global_cfg.get("trust_project_config", False))
+    return _merge_configs(global_cfg, project_cfg, trust)
 
 
 # -----------------------------------------------------------------------------
