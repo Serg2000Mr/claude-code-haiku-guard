@@ -49,6 +49,18 @@
           }
         ]
       }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Read|WebFetch|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python ~/.claude/hooks/haiku_guard.py",
+            "timeout": 10
+          }
+        ]
+      }
     ]
   }
 }
