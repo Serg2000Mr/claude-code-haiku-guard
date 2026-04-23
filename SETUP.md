@@ -226,6 +226,29 @@ Back-of-the-envelope daily numbers:
 
 What really keeps the bill low is the local cache in `~/.claude/hooks/haiku_cache.json`: the same full command in the same `cwd` is not sent again. Provider-side prompt caching would not help here — Claude Haiku 4.5 only starts caching from 4096 tokens, and the prompts in this hook are much shorter.
 
+## 🌳 Optional: structural command parsing with shfmt
+
+If [`shfmt`](https://github.com/mvdan/sh) is on your `PATH` (or `HAIKU_GUARD_SHFMT` points to it), the hook uses it to parse each Bash command into an AST and derive segments and composition structurally. This closes the obfuscation gap in the regex fallback:
+
+- `curl url | "/bin/ba"sh` — quote-concat target is detected as `download and execute`
+- `curl $(echo url) | bash` — nested substitution in the URL is classified the same way
+- Pipes inside `$()` / subshells / here-docs are walked correctly instead of being split blindly
+
+Without `shfmt`, the hook still works on the original regex split — no functional regression.
+
+AST is only invoked when the command contains structural markers (`|`, `&&`, `||`, `$(`, backtick, `<<`, `>`). Simple commands like `ls -la` or `git status` skip the subprocess entirely, so there is no added latency on the common path.
+
+Install (Windows Git Bash):
+
+```bash
+mkdir -p ~/tools/shfmt
+curl -L --ssl-no-revoke -o ~/tools/shfmt/shfmt.exe \
+  https://github.com/mvdan/sh/releases/latest/download/shfmt_v3.13.1_windows_amd64.exe
+export HAIKU_GUARD_SHFMT=~/tools/shfmt/shfmt.exe
+```
+
+Linux / macOS: package managers or `go install mvdan.cc/sh/v3/cmd/shfmt@latest`.
+
 ## 🤖 Optional: choose a different model
 
 You can point the guard at another OpenRouter model:

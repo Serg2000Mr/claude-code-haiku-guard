@@ -226,6 +226,29 @@ tail -20 ~/.claude/hooks/haiku_log.jsonl
 
 Счёт держит низким локальный кэш `~/.claude/hooks/haiku_cache.json`: одна и та же полная команда в том же `cwd` второй раз в API не уходит. Prompt-кэш провайдера здесь не помогает — Claude Haiku 4.5 включает кэш от 4096 токенов, а промпты в хуке сильно короче.
 
+## 🌳 Необязательно: структурный разбор команд через shfmt
+
+Если [`shfmt`](https://github.com/mvdan/sh) есть в `PATH` (или `HAIKU_GUARD_SHFMT` указывает на него), хук парсит каждую Bash-команду в AST и вычисляет сегменты и композиции структурно. Это закрывает слабые места regex-разбора:
+
+- `curl url | "/bin/ba"sh` — склейка кавычками распознаётся как `download and execute`
+- `curl $(echo url) | bash` — вложенная подстановка в URL классифицируется так же
+- Пайпы внутри `$()` / subshell / here-doc обрабатываются корректно, а не разбиваются поверхностно
+
+Без `shfmt` хук продолжает работать на исходном regex-разделителе — функционального регресса нет.
+
+AST вызывается только для команд со структурными маркерами (`|`, `&&`, `||`, `$(`, backtick, `<<`, `>`). Простые команды вроде `ls -la` или `git status` не идут в subprocess, поэтому на типичных запросах лишней задержки нет.
+
+Установка (Windows Git Bash):
+
+```bash
+mkdir -p ~/tools/shfmt
+curl -L --ssl-no-revoke -o ~/tools/shfmt/shfmt.exe \
+  https://github.com/mvdan/sh/releases/latest/download/shfmt_v3.13.1_windows_amd64.exe
+export HAIKU_GUARD_SHFMT=~/tools/shfmt/shfmt.exe
+```
+
+Linux / macOS: через пакетный менеджер или `go install mvdan.cc/sh/v3/cmd/shfmt@latest`.
+
 ## 🤖 Необязательно: другая модель
 
 Хук можно направить на другую модель OpenRouter:

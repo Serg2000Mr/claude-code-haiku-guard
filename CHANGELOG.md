@@ -4,6 +4,12 @@ All notable user-visible changes live here. For the full commit history see `git
 
 ## 2026-04-22
 
+### Optional shfmt AST backend
+- When `shfmt` is on `PATH` (or `HAIKU_GUARD_SHFMT` points to it), compound commands are parsed into an AST before classification. Segments, composition detection and `download | interpreter` patterns are derived from the AST instead of a flat regex split.
+- Catches obfuscation the regex missed: `curl url | "/bin/ba"sh` (quote-concat), `curl $(echo url) | bash` (nested substitution), pipes inside `$()` / subshells / here-docs.
+- Gated by structural markers (`|`, `&&`, `||`, `$(`, backtick, `<<`, `>`) — simple commands like `ls -la` or `git status` skip the subprocess entirely; no added latency on the common path.
+- AST backend is optional; without `shfmt` the hook falls back to regex split with no functional regression.
+
 ### Read tool coverage
 - New `Read` matcher in the default `settings.json` — the hook now auto-allows reads of normal files and surfaces a dialog only for sensitive paths.
 - Sensitive-path patterns: `.env*`, `.ssh/`, `.aws/`, `.gnupg/`, `*credentials*`, `*secrets*`, `*.pem`, `*.key`, `*.pfx`, `*.p12`, `*_token*`, `id_rsa`/`id_ed25519`, `.netrc`.

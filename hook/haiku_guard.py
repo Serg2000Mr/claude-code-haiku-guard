@@ -241,6 +241,158 @@ BASH_RULES = [
 
 _RANK = {"none": 0, "low": 1, "medium": 2, "high": 3, "critical": 4, "unknown": -1}
 
+# --- shfmt AST backend (optional) ----------------------------------------
+# When shfmt is in PATH (or HAIKU_GUARD_SHFMT points to it), we parse bash
+# commands into an AST and derive segments/composition structurally. This
+# catches obfuscation like `curl url | "/bin/ba"sh` that flat regex misses.
+# When shfmt is absent we fall back to the original regex split, so the
+# hook stays functional without the extra dependency.
+
+_INTERPRETERS = {"bash", "sh", "zsh", "ksh", "python", "python3", "py",
+                 "node", "ruby", "perl", "php"}
+_DOWNLOADERS = {"curl", "wget", "fetch", "iwr", "Invoke-WebRequest"}
+
+# Structural markers that justify paying shfmt's subprocess cost (50-500ms
+# on Windows). Simple commands like `ls -la` or `git status` don't benefit
+# from AST — regex split handles them correctly and for free.
+_AST_WORTH_MARKERS = ("|", "&&", "||", ";", "$(", "`", "<<", ">")
+
+
+def _find_shfmt() -> str | None:
+    env = os.environ.get("HAIKU_GUARD_SHFMT", "").strip()
+    if env and os.path.isfile(env):
+        return env
+    import shutil
+    p = shutil.which("shfmt") or shutil.which("shfmt.exe")
+    if p:
+        return p
+    for candidate in (
+        os.path.expanduser("~/go/bin/shfmt"),
+        os.path.expanduser("~/go/bin/shfmt.exe"),
+        os.path.expanduser("~/tools/shfmt/shfmt.exe"),
+        os.path.expanduser("~/tools/shfmt/shfmt"),
+    ):
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+_SHFMT_PATH = _find_shfmt()
+
+
+def _parse_ast(command: str) -> dict | None:
+    """Return shfmt AST dict for command, or None if shfmt is unavailable,
+    unnecessary (simple command), or parsing failed."""
+    if not _SHFMT_PATH or not command:
+        return None
+    if not any(m in command for m in _AST_WORTH_MARKERS):
+        return None
+    try:
+        import subprocess
+        r = subprocess.run(
+            [_SHFMT_PATH, "-tojson"], input=command,
+            capture_output=True, text=True, timeout=2,
+        )
+        if r.returncode != 0:
+            return None
+        return json.loads(r.stdout)
+    except Exception:
+        return None
+
+
+def _cmd_first_word(call: dict) -> str:
+    """Extract the program name from a CallExpr Cmd node (strip path)."""
+    args = (call or {}).get("Args") or []
+    if not args:
+        return ""
+    parts = (args[0] or {}).get("Parts") or []
+    for p in parts:
+        if p.get("Type") == "Lit":
+            return (p.get("Value") or "").split("/")[-1]
+    return ""
+
+
+def _walk_commands(node: dict, out: list):
+    """Collect every CallExpr node from the AST. Caller slices source by
+    the node's Pos/End to get the per-segment text."""
+    if not isinstance(node, dict):
+        return
+    t = node.get("Type")
+    if t == "File":
+        for s in node.get("Stmts") or []:
+            _walk_commands(s, out)
+        return
+    if "Cmd" in node and node.get("Type") != "Stmt":
+        _walk_commands(node.get("Cmd") or {}, out)
+        return
+    if t == "CallExpr":
+        out.append(node)
+        return
+    if t == "BinaryCmd":
+        x = node.get("X") or {}
+        y = node.get("Y") or {}
+        _walk_commands(x.get("Cmd") if "Cmd" in x else x, out)
+        _walk_commands(y.get("Cmd") if "Cmd" in y else y, out)
+        return
+    if t in ("Subshell", "Block"):
+        for s in node.get("Stmts") or []:
+            _walk_commands(s, out)
+        return
+    if t == "IfClause":
+        for key in ("Cond", "Then", "Else"):
+            for s in node.get(key) or []:
+                _walk_commands(s, out)
+        return
+
+
+def _detect_download_exec_ast(ast: dict) -> bool:
+    """True when the AST contains a BinaryCmd pipe feeding a downloader into
+    an interpreter. Structural, so it catches quote-concat obfuscation."""
+    if not ast:
+        return False
+    stack = [ast]
+    while stack:
+        n = stack.pop()
+        if not isinstance(n, dict):
+            continue
+        if n.get("Type") == "BinaryCmd":
+            x_cmd = (n.get("X") or {}).get("Cmd") or {}
+            y_cmd = (n.get("Y") or {}).get("Cmd") or {}
+            xw = _cmd_first_word(x_cmd) if x_cmd.get("Type") == "CallExpr" else ""
+            yw = _cmd_first_word(y_cmd) if y_cmd.get("Type") == "CallExpr" else ""
+            if xw in _DOWNLOADERS and yw in _INTERPRETERS:
+                return True
+        for v in n.values():
+            if isinstance(v, dict):
+                stack.append(v)
+            elif isinstance(v, list):
+                for i in v:
+                    if isinstance(i, dict):
+                        stack.append(i)
+    return False
+
+
+def _segments_ast(command: str, ast: dict) -> list[str] | None:
+    """Return list of command segments using AST, slicing the original string
+    by each CallExpr's Pos/End offset. Returns None if AST missing or empty."""
+    if not ast:
+        return None
+    nodes: list = []
+    _walk_commands(ast, nodes)
+    if not nodes:
+        return None
+    segs = []
+    for node in nodes:
+        pos = (node.get("Pos") or {}).get("Offset") or 0
+        end = (node.get("End") or {}).get("Offset") or len(command)
+        try:
+            s = command[pos:end].strip()
+            if s:
+                segs.append(s)
+        except Exception:
+            pass
+    return segs or None
+
 
 def _classify_segment(seg: str):
     for pattern, danger, human in BASH_RULES:
@@ -249,8 +401,11 @@ def _classify_segment(seg: str):
     return None, None
 
 
-def _check_composition_patterns(command: str):
-    """Detect dangerous pipe compositions that per-segment max-risk misses."""
+def _check_composition_patterns(command: str, ast: dict | None = None):
+    """Detect dangerous pipe compositions. Uses AST when available (catches
+    obfuscation like `curl url | "/bin/ba"sh`); falls back to regex."""
+    if ast and _detect_download_exec_ast(ast):
+        return "download and execute", "high"
     if re.search(r'\b(curl|wget)\b.*\|\s*(bash|sh|python|python3|py|node)\b', command, re.IGNORECASE):
         return "download and execute", "high"
     return None, None
@@ -273,16 +428,22 @@ def _strip_commit_message(command: str) -> str:
 
 def rules_classify(command: str):
     """Classify by rules, splitting compound commands on ; && || |.
-    Returns (desc, danger) or (None, None) if any part is unknown."""
+    Uses shfmt AST when available (catches obfuscation); falls back to
+    regex split. Returns (desc, danger) or (None, None) if any part is
+    unknown."""
     cmd = _strip_commit_message((command or "").strip())
     if not cmd:
         return "empty", "none"
 
-    comp_desc, comp_danger = _check_composition_patterns(cmd)
+    ast = _parse_ast(cmd)
+
+    comp_desc, comp_danger = _check_composition_patterns(cmd, ast)
     if comp_danger:
         return comp_desc, comp_danger
 
-    parts = re.split(r"\s*(?:;|&&|\|\||\|)\s*", cmd)
+    parts = _segments_ast(cmd, ast) if ast else None
+    if parts is None:
+        parts = re.split(r"\s*(?:;|&&|\|\||\|)\s*", cmd)
     worst_desc, worst_danger = None, None
     any_unknown = False
     for p in parts:
