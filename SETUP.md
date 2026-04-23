@@ -53,33 +53,39 @@ Merge the `hooks` block from [examples/settings.json](examples/settings.json) in
     "PreToolUse": [
       {
         "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python ~/.claude/hooks/haiku_guard.py",
-            "timeout": 70
-          }
-        ]
+        "hooks": [{
+          "type": "command",
+          "command": "python ~/.claude/hooks/haiku_guard.py",
+          "timeout": 70
+        }]
       },
       {
         "matcher": "Read",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python ~/.claude/hooks/haiku_guard.py",
-            "timeout": 15
-          }
-        ]
+        "hooks": [{
+          "type": "command",
+          "command": "python ~/.claude/hooks/haiku_guard.py",
+          "timeout": 15
+        }]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [{
+          "type": "command",
+          "command": "python ~/.claude/hooks/haiku_guard.py",
+          "timeout": 10
+        }]
       }
     ]
   }
 }
 ```
 
-Two matchers:
+Three integration points:
 
-- **Bash** — full classification with Haiku for medium-risk commands.
-- **Read** — auto-allows reads of normal files; surfaces a dialog only for sensitive paths (`.env*`, `.ssh/`, `.aws/`, `*credentials*`, `*.pem`, `*.key`, tokens). This removes the "Allow reading from X?" prompts for every new directory Claude opens a file in.
+- **PreToolUse / Bash** — full classification with Haiku for medium-risk commands.
+- **PreToolUse / Read** — auto-allows reads of normal files; surfaces a dialog only for sensitive paths (`.env*`, `.ssh/`, `.aws/`, `*credentials*`, `*.pem`, `*.key`, tokens). Removes the "Allow reading from X?" prompts for every new directory Claude opens.
+- **UserPromptSubmit** — blocks submission of any prompt containing recognisable credentials (AWS / GitHub / Anthropic / OpenAI / OpenRouter / Slack / Stripe / Google API keys, JWTs, PEM private keys) before they leave your machine.
 
 The script also understands `PermissionRequest`, but `PreToolUse` is the path you want for normal classification.
 

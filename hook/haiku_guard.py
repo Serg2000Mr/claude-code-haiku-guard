@@ -1175,6 +1175,83 @@ def _emit_ask(reason: str, event_name: str = "PermissionRequest"):
 
 
 # -----------------------------------------------------------------------------
+# Secret scanner (UserPromptSubmit hook)
+# -----------------------------------------------------------------------------
+# Blocks submission of a prompt that contains recognisable credential
+# tokens, before the prompt leaves the user's machine. Patterns are
+# deliberately narrow — false positives make the guard unusable.
+# BIP39 seed phrases intentionally not detected (too fuzzy for a keyword
+# scanner; needs wordlist match).
+
+SECRET_PATTERNS = [
+    # AWS
+    (r"\bAKIA[0-9A-Z]{16}\b",                             "AWS access key"),
+    (r"\bASIA[0-9A-Z]{16}\b",                             "AWS temp key"),
+    # GitHub tokens — all PAT/installation/OAuth variants
+    (r"\bgh[pousr]_[A-Za-z0-9]{36,255}\b",                "GitHub token"),
+    (r"\bgithub_pat_[A-Za-z0-9_]{70,}\b",                 "GitHub fine-grained PAT"),
+    # Anthropic API
+    (r"\bsk-ant-(?:api|admin)[A-Za-z0-9_-]{20,}\b",       "Anthropic API key"),
+    # OpenAI — exclude sk-ant- (Anthropic) and sk-or- (OpenRouter) prefixes
+    (r"\bsk-(?!ant-|or-)(?:proj-)?[A-Za-z0-9_-]{40,}\b",  "OpenAI API key"),
+    # Slack
+    (r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b",                 "Slack token"),
+    # Stripe
+    (r"\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{24,}\b",     "Stripe key"),
+    # Google API
+    (r"\bAIza[0-9A-Za-z_-]{35}\b",                        "Google API key"),
+    # Private key blocks (covers RSA, EC, DSA, OPENSSH, PGP)
+    (r"-----BEGIN [A-Z ]*PRIVATE KEY-----",               "private key block"),
+    # JWT (three base64url segments separated by dots)
+    (r"\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b",
+                                                          "JWT token"),
+    # OpenRouter
+    (r"\bsk-or-(?:v1-)?[A-Za-z0-9]{40,}\b",               "OpenRouter key"),
+]
+
+
+def _scan_secrets(text: str) -> list[str]:
+    """Return list of human-readable secret kinds detected in text."""
+    if not text:
+        return []
+    found = []
+    for pattern, label in SECRET_PATTERNS:
+        if re.search(pattern, text):
+            found.append(label)
+    return list(dict.fromkeys(found))  # dedupe, preserve order
+
+
+def _handle_user_prompt_submit(payload: dict) -> None:
+    """UserPromptSubmit hook: block submission if the prompt contains
+    recognisable secrets. Otherwise exit silently (no decision — Claude Code
+    proceeds as usual)."""
+    prompt = str(payload.get("prompt") or payload.get("user_prompt") or "")
+    if not prompt:
+        return
+    secrets = _scan_secrets(prompt)
+    if not secrets:
+        return
+    labels = ", ".join(secrets)
+    log_event({"phase": "secret_detected", "labels": secrets,
+               "prompt_len": len(prompt)})
+    _notify(
+        "Haiku Guard — secret blocked in prompt",
+        "ATTENTION!\n\n"
+        f"Detected in the user prompt: {labels}\n\n"
+        "The prompt has been blocked from reaching the model.\n"
+        "Remove the secret, then resubmit.",
+        icon="error",
+    )
+    out = {"hookSpecificOutput": {
+        "hookEventName": "UserPromptSubmit",
+        "decision": "block",
+        "reason": (f"Blocked by haiku-guard: prompt contains {labels}. "
+                   "Remove the credential and resubmit."),
+    }}
+    sys.stdout.write(json.dumps(out, ensure_ascii=False))
+
+
+# -----------------------------------------------------------------------------
 # Main
 # -----------------------------------------------------------------------------
 
@@ -1186,6 +1263,13 @@ def main() -> None:
         return
 
     event_name = payload.get("hook_event_name") or "PermissionRequest"
+
+    # UserPromptSubmit is a separate event with its own payload shape —
+    # handle it before touching tool_* fields.
+    if event_name == "UserPromptSubmit":
+        _handle_user_prompt_submit(payload)
+        return
+
     tool_name = payload.get("tool_name", "?")
     tool_input = payload.get("tool_input") or {}
 

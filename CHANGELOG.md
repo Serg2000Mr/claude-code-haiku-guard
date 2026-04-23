@@ -4,6 +4,12 @@ All notable user-visible changes live here. For the full commit history see `git
 
 ## 2026-04-22
 
+### Secret scanner on UserPromptSubmit
+- New `UserPromptSubmit` hook entry blocks submission of any prompt that contains a recognisable credential before it reaches the model or OpenRouter.
+- Detected kinds: AWS access/temp keys, GitHub PAT (classic + fine-grained), Anthropic API, OpenAI API, OpenRouter key, Slack, Stripe (live + test), Google API, JWT, private-key PEM blocks.
+- OpenAI pattern uses a negative lookahead for `sk-ant-` / `sk-or-` so Anthropic and OpenRouter keys are not also flagged as OpenAI.
+- On match: Claude Code blocks the prompt; user sees an error-icon MessageBox listing the kinds detected. BIP39 seed phrases intentionally not detected (too fuzzy for a keyword scanner).
+
 ### Lightweight action type taxonomy
 - 17 action types: `filesystem_read` / `filesystem_write` / `filesystem_delete`, `network_fetch`, `download_execute`, `lang_exec`, `version_control`, `history_rewrite`, `package_manage`, `container`, `process_signal`, `permission_change`, `system_info`, `shell_builtin`, `interpreter_check`, `shutdown`, `db_admin`.
 - Every rule match is annotated with an action type and passed both to the Haiku decision prompt (as a structured signal alongside `Level:`) and into the `haiku_log.jsonl` log. Makes it possible to filter/count decisions by semantic intent later.
