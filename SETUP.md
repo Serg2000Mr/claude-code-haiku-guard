@@ -66,6 +66,14 @@ Merge the `hooks` block from [examples/settings.json](examples/settings.json) in
           "command": "python ~/.claude/hooks/haiku_guard.py",
           "timeout": 15
         }]
+      },
+      {
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit",
+        "hooks": [{
+          "type": "command",
+          "command": "python ~/.claude/hooks/haiku_guard.py",
+          "timeout": 15
+        }]
       }
     ],
     "UserPromptSubmit": [
@@ -81,10 +89,11 @@ Merge the `hooks` block from [examples/settings.json](examples/settings.json) in
 }
 ```
 
-Three integration points:
+Four integration points:
 
 - **PreToolUse / Bash** — full classification with Haiku for medium-risk commands.
 - **PreToolUse / Read** — auto-allows reads of normal files; surfaces a dialog only for sensitive paths (`.env*`, `.ssh/`, `.aws/`, `*credentials*`, `*.pem`, `*.key`, tokens). Removes the "Allow reading from X?" prompts for every new directory Claude opens.
+- **PreToolUse / Write | Edit | MultiEdit | NotebookEdit** — four-layer write classifier: sensitive path → self-protected (`~/.claude/hooks/`, `settings.json`) → content-scan for secrets → critical artefact → outside-project-boundary.
 - **UserPromptSubmit** — blocks submission of any prompt containing recognisable credentials (AWS / GitHub / Anthropic / OpenAI / OpenRouter / Slack / Stripe / Google API keys, JWTs, PEM private keys) before they leave your machine.
 
 The script also understands `PermissionRequest`, but `PreToolUse` is the path you want for normal classification.

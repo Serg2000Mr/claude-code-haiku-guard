@@ -692,9 +692,13 @@ def _load_cache() -> dict:
 
 
 def _save_cache(cache: dict) -> None:
+    # PID-scoped tmp file so two parallel hook processes don't collide on
+    # a shared "<cache>.tmp" path. The last os.replace still wins on the
+    # target, which for this cache is acceptable: losing a cache entry
+    # causes at worst an extra LLM call, not a security gap.
     try:
         os.makedirs(os.path.dirname(CACHE_FILE), exist_ok=True)
-        tmp = CACHE_FILE + ".tmp"
+        tmp = f"{CACHE_FILE}.tmp.{os.getpid()}"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(cache, f, ensure_ascii=False)
         os.replace(tmp, CACHE_FILE)
@@ -1088,9 +1092,38 @@ def _is_critical_write(path: str, cfg: dict) -> bool:
     return False
 
 
+def _is_outside_project(path: str) -> bool:
+    """True when the write target is demonstrably outside the session-stable
+    project root. Temp-scratch paths (/tmp, /var/tmp, AppData/Local/Temp)
+    are whitelisted — agents routinely write short-lived artefacts there.
+    When CLAUDE_PROJECT_DIR is unset we return False (cannot decide;
+    graceful degradation — other classifier layers still apply)."""
+    pd = _project_dir()
+    if not pd or not path:
+        return False
+    try:
+        abs_path = os.path.abspath(path)
+    except Exception:
+        return False
+    norm = abs_path.replace("\\", "/")
+    proj = os.path.abspath(pd).replace("\\", "/").rstrip("/")
+    if norm.lower().startswith(proj.lower() + "/") or norm.lower() == proj.lower():
+        return False
+    lower = norm.lower()
+    whitelist = [
+        "/tmp/", "/var/tmp/", "/private/tmp/",
+        os.path.expanduser("~/AppData/Local/Temp/").replace("\\", "/").lower(),
+    ]
+    user = (os.environ.get("USERNAME") or os.environ.get("USER") or "").lower()
+    if user:
+        whitelist.append(f"c:/users/{user}/appdata/local/temp/")
+    return not any(lower.startswith(w) for w in whitelist if w and w != "/")
+
+
 def _classify_write(path: str, content: str, cfg: dict) -> tuple[str, str]:
     """Classify a Write/Edit into a (desc, danger) pair.
-    Priority: sensitive > self-protected > content-contains-secret > critical > default."""
+    Priority: sensitive > self-protected > content-contains-secret
+            > critical > outside-project-boundary > default."""
     fn = os.path.basename(path or "?")
     if _is_sensitive_read(path):
         return f"write sensitive: {fn}", "high"
@@ -1102,6 +1135,8 @@ def _classify_write(path: str, content: str, cfg: dict) -> tuple[str, str]:
             return f"write contains {', '.join(secrets)}: {fn}", "high"
     if _is_critical_write(path, cfg):
         return f"write critical: {fn}", "medium"
+    if _is_outside_project(path):
+        return f"write outside project boundary: {fn}", "medium"
     return f"write {fn}", "low"
 
 
@@ -1274,32 +1309,63 @@ def _session_id_from_payload(payload: dict) -> str | None:
 
 
 def _chain_state_path(session_id: str) -> str:
-    return os.path.join(CHAIN_STATE_DIR, f"{session_id}.json")
+    # JSONL-style event log (one event per line). Each line is an independent
+    # append — no read-modify-write, so parallel hook processes cannot race
+    # and lose each other's updates like they would with a full JSON rewrite.
+    return os.path.join(CHAIN_STATE_DIR, f"{session_id}.log")
 
 
 def _load_chain_state(session_id: str) -> dict:
+    """Reconstruct download / prepared sets from the append-only event log.
+    Drops entries older than TTL. Missing or malformed lines are skipped."""
     path = _chain_state_path(session_id)
+    now = datetime.datetime.now(datetime.timezone.utc).timestamp()
+    downloads: dict[str, float] = {}
+    prepared: dict[str, float] = {}
     try:
         with open(path, "r", encoding="utf-8") as f:
-            state = json.load(f)
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    e = json.loads(line)
+                except Exception:
+                    continue
+                ts = e.get("ts") or 0
+                if now - ts > _CHAIN_ENTRY_TTL_SEC:
+                    continue
+                kind = e.get("kind")
+                path_v = e.get("path")
+                if not path_v:
+                    continue
+                if kind == "download":
+                    downloads[path_v] = ts
+                elif kind == "prepared":
+                    prepared[path_v] = ts
+    except FileNotFoundError:
+        pass
     except Exception:
-        return {"downloads": [], "prepared": []}
-    now = datetime.datetime.now(datetime.timezone.utc).timestamp()
-    for key in ("downloads", "prepared"):
-        state[key] = [e for e in state.get(key) or []
-                      if now - (e.get("ts") or 0) < _CHAIN_ENTRY_TTL_SEC]
-    return state
+        pass
+    return {
+        "downloads": [{"path": p, "ts": t} for p, t in downloads.items()],
+        "prepared":  [{"path": p, "ts": t} for p, t in prepared.items()],
+    }
 
 
-def _save_chain_state(session_id: str, state: dict) -> None:
-    path = _chain_state_path(session_id)
+def _append_chain_event(session_id: str, kind: str, path: str) -> None:
+    """Append one event line atomically. Short JSONL lines under PIPE_BUF are
+    essentially atomic on POSIX and Windows small-append paths — good enough
+    for our workload (one entry per hook invocation)."""
+    if not session_id or not kind or not path:
+        return
     try:
         os.makedirs(CHAIN_STATE_DIR, exist_ok=True)
-        # atomic-ish: write sibling, rename
-        tmp = path + f".tmp.{os.getpid()}"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(state, f, ensure_ascii=False)
-        os.replace(tmp, path)
+        fp = _chain_state_path(session_id)
+        event = {"kind": kind, "path": path,
+                 "ts": datetime.datetime.now(datetime.timezone.utc).timestamp()}
+        with open(fp, "a", encoding="utf-8") as f:
+            f.write(json.dumps(event, ensure_ascii=False) + "\n")
     except Exception:
         pass
 
@@ -1380,11 +1446,14 @@ def _extract_exec_target(command: str) -> str | None:
 def _chain_check_and_record(session_id: str, command: str) -> str | None:
     """Update the session state with what this command would do and, if a
     download→chmod→execute chain closes on the same file, return a human
-    description so the caller can escalate risk. Returns None otherwise."""
+    description so the caller can escalate risk. Returns None otherwise.
+
+    Uses append-only JSONL event log: each update is one appended line,
+    so parallel hook processes cannot race on a shared read-modify-write
+    boundary. Current set is reconstructed from the log on each call."""
     if not session_id or not command:
         return None
     state = _load_chain_state(session_id)
-    now = datetime.datetime.now(datetime.timezone.utc).timestamp()
     dl = _extract_download_target(command)
     chmod = _extract_chmod_exec_target(command)
     execd = _extract_exec_target(command)
@@ -1397,16 +1466,14 @@ def _chain_check_and_record(session_id: str, command: str) -> str | None:
         if execd in prep_paths:
             chain = f"download → chmod +x → execute chain on {execd}"
         elif execd in dl_paths:
-            # download → direct interpreter execute (no chmod)
             chain = f"download → interpreter execute chain on {execd}"
 
-    if chmod and chmod in dl_paths and chmod not in prep_paths:
-        state["prepared"].append({"path": chmod, "ts": now})
-
-    if dl and dl not in dl_paths:
-        state["downloads"].append({"path": dl, "ts": now})
-
-    _save_chain_state(session_id, state)
+    # Append, don't merge: two concurrent hooks both appending events
+    # produce independent lines; reader deduplicates via latest-ts-per-path.
+    if chmod and chmod in dl_paths:
+        _append_chain_event(session_id, "prepared", chmod)
+    if dl:
+        _append_chain_event(session_id, "download", dl)
     return chain
 
 

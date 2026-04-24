@@ -66,6 +66,14 @@ echo '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command"
           "command": "python ~/.claude/hooks/haiku_guard.py",
           "timeout": 15
         }]
+      },
+      {
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit",
+        "hooks": [{
+          "type": "command",
+          "command": "python ~/.claude/hooks/haiku_guard.py",
+          "timeout": 15
+        }]
       }
     ],
     "UserPromptSubmit": [
@@ -81,10 +89,11 @@ echo '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command"
 }
 ```
 
-Три точки интеграции:
+Четыре точки интеграции:
 
 - **PreToolUse / Bash** — полная классификация с Haiku для medium-команд.
 - **PreToolUse / Read** — автоматически пропускает чтение обычных файлов; диалог показывается только для чувствительных путей (`.env*`, `.ssh/`, `.aws/`, `*credentials*`, `*.pem`, `*.key`, токены). Убирает вечные диалоги «Allow reading from X?» для каждой новой директории.
+- **PreToolUse / Write | Edit | MultiEdit | NotebookEdit** — четырёхслойный классификатор записи: sensitive path → self-protected (`~/.claude/hooks/`, `settings.json`) → content-scan на секреты → critical artefact → outside-project-boundary.
 - **UserPromptSubmit** — блокирует отправку промпта, если в нём есть узнаваемые креденшалы (ключи AWS / GitHub / Anthropic / OpenAI / OpenRouter / Slack / Stripe / Google API, JWT, PEM-блоки приватных ключей), до того как он уйдёт к модели.
 
 Скрипт понимает и `PermissionRequest`, но для обычной классификации используется `PreToolUse`.
