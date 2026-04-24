@@ -4,6 +4,15 @@ All notable user-visible changes live here. For the full commit history see `git
 
 ## 2026-04-22
 
+### Session-scoped chain tracker
+- New detector for file-linked causal chains within a session. Catches the classic compromise pattern: agent downloads a file, makes it executable, runs it — by the same path.
+- Chains surfaced:
+  - `curl -o X URL` → `chmod +x X` → `X` (or `./X`, `bash X`, `python X`, …)
+  - `curl -o X URL` → direct interpreter execute of `X` (no chmod step)
+- State lives in `~/.claude/hooks/haiku_chain_state/<session_id>.json`, anchored to the Claude Code session. Per-entry TTL 30 min; files older than 24 h are garbage-collected on next read. No daemon, no persistent DB.
+- When a chain closes, the current step is surfaced to the user as `high` / dialog, regardless of what the individual command's risk would have been alone.
+- Scope is deliberately narrow — only explicit `curl -o` / `-O` / `--output` and `wget -O` / `--output-document` downloads are tracked. Behavioural heuristics without a file identity are out of scope.
+
 ### Injection defender on PostToolUse
 - New `PostToolUse` matcher (Read / WebFetch / Bash) scans the tool's output for prompt-injection markers: "ignore previous instructions", `<system>`-style chat tags, role reassignments ("you are now…"), embedded "run this command:", zero-width / bidi unicode runs.
 - On match, a `SECURITY WARNING` is appended to the agent's context via `additionalContext` — the agent is told to treat suspicious text as DATA, not as directives, and to surface it to the user. Never blocks — a blocking layer would stall legitimate reads on false positives.

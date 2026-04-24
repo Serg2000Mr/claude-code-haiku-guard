@@ -1248,6 +1248,169 @@ def _emit_ask(reason: str, event_name: str = "PermissionRequest"):
 
 
 # -----------------------------------------------------------------------------
+# Session-scoped chain tracker (MVP — file-linked causal chains only)
+# -----------------------------------------------------------------------------
+# Detects sequences like `curl -o x.sh URL` → `chmod +x x.sh` → `./x.sh`
+# within a single Claude Code session. No daemon, no persistent DB — state
+# lives in ~/.claude/hooks/haiku_chain_state/<session>.json and is time-
+# bounded. TTL: 30 minutes per entry; files older than 24 h are garbage-
+# collected on read.
+# Scope is deliberately narrow: we only track downloads whose destination
+# is explicit (-o / -O), and we only raise risk when the SAME file path is
+# made executable and then invoked. Behavioural heuristics without a file
+# identity (e.g. "rm after navigation") are out of scope.
+
+CHAIN_STATE_DIR = os.path.expanduser("~/.claude/hooks/haiku_chain_state")
+_CHAIN_ENTRY_TTL_SEC = 30 * 60
+_CHAIN_FILE_MAX_AGE_SEC = 24 * 3600
+
+
+def _session_id_from_payload(payload: dict) -> str | None:
+    sid = payload.get("session_id") or payload.get("sessionId")
+    if not sid:
+        return None
+    s = str(sid).strip()
+    return s if re.fullmatch(r"[A-Za-z0-9_\-.]{1,128}", s) else None
+
+
+def _chain_state_path(session_id: str) -> str:
+    return os.path.join(CHAIN_STATE_DIR, f"{session_id}.json")
+
+
+def _load_chain_state(session_id: str) -> dict:
+    path = _chain_state_path(session_id)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            state = json.load(f)
+    except Exception:
+        return {"downloads": [], "prepared": []}
+    now = datetime.datetime.now(datetime.timezone.utc).timestamp()
+    for key in ("downloads", "prepared"):
+        state[key] = [e for e in state.get(key) or []
+                      if now - (e.get("ts") or 0) < _CHAIN_ENTRY_TTL_SEC]
+    return state
+
+
+def _save_chain_state(session_id: str, state: dict) -> None:
+    path = _chain_state_path(session_id)
+    try:
+        os.makedirs(CHAIN_STATE_DIR, exist_ok=True)
+        # atomic-ish: write sibling, rename
+        tmp = path + f".tmp.{os.getpid()}"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False)
+        os.replace(tmp, path)
+    except Exception:
+        pass
+
+
+def _cleanup_old_chain_states() -> None:
+    if not os.path.isdir(CHAIN_STATE_DIR):
+        return
+    now = datetime.datetime.now(datetime.timezone.utc).timestamp()
+    for name in os.listdir(CHAIN_STATE_DIR):
+        p = os.path.join(CHAIN_STATE_DIR, name)
+        try:
+            if now - os.path.getmtime(p) > _CHAIN_FILE_MAX_AGE_SEC:
+                os.remove(p)
+        except Exception:
+            pass
+
+
+def _normalize_path(path: str) -> str:
+    """Canonical form for chain comparison: strip leading ./, normalize
+    separators, lowercase on Windows. Relative paths are kept as-is —
+    chain detection works even without absolute resolution because agents
+    usually stay in the same cwd across a 3-step chain."""
+    p = (path or "").replace("\\", "/").strip()
+    if p.startswith("./"):
+        p = p[2:]
+    if os.name == "nt":
+        p = p.lower()
+    return p
+
+
+def _extract_download_target(command: str) -> str | None:
+    """Extract file written by curl -o / -O / --output / wget -O."""
+    m = re.search(r"\bcurl\b[^\n;]*\s(?:-o|--output)\s+(\S+)", command)
+    if m:
+        return _normalize_path(m.group(1))
+    m = re.search(r"\bwget\b[^\n;]*\s(?:-O|--output-document)\s+(\S+)", command)
+    if m:
+        return _normalize_path(m.group(1))
+    # curl -O URL — uses basename of URL
+    m = re.search(r"\bcurl\b[^\n;]*\s-O\s+(\S+)", command)
+    if m:
+        url = m.group(1)
+        name = url.rstrip("/").rsplit("/", 1)[-1].split("?", 1)[0]
+        if name:
+            return _normalize_path(name)
+    return None
+
+
+def _extract_chmod_exec_target(command: str) -> str | None:
+    """Extract path made executable by chmod +x / chmod 755-style / chmod a+x."""
+    m = re.search(r"\bchmod\b[^\n;]*\s(?:\+x|a\+x|u\+x|[0-9]*[157][0-9]*)\s+(\S+)", command)
+    return _normalize_path(m.group(1)) if m else None
+
+
+def _extract_exec_target(command: str) -> str | None:
+    """Extract the file that a run-like command points at. Covers:
+      - ./x.sh     (relative with explicit prefix)
+      - /tmp/x.sh  (absolute path starting with / — first token)
+      - bash x.sh / python x.py / node x.js / etc."""
+    cmd = (command or "").lstrip()
+    # ./<file> — first token
+    m = re.match(r"\./(\S+)", cmd)
+    if m:
+        return _normalize_path(m.group(1))
+    # Absolute path as first token, with a file extension we recognize.
+    # Keeps the match narrow to avoid false positives on e.g. "cd /var/log".
+    m = re.match(r"(/\S+\.(?:sh|py|js|rb|pl|bash|zsh))\b", cmd)
+    if m:
+        return _normalize_path(m.group(1))
+    # interpreter <file>
+    m = re.match(r"(?:bash|sh|zsh|python|python3|py|node|ruby|perl)\s+(\S+\.(?:sh|py|js|rb|pl|bash|zsh))\b",
+                 cmd)
+    if m:
+        return _normalize_path(m.group(1))
+    return None
+
+
+def _chain_check_and_record(session_id: str, command: str) -> str | None:
+    """Update the session state with what this command would do and, if a
+    download→chmod→execute chain closes on the same file, return a human
+    description so the caller can escalate risk. Returns None otherwise."""
+    if not session_id or not command:
+        return None
+    state = _load_chain_state(session_id)
+    now = datetime.datetime.now(datetime.timezone.utc).timestamp()
+    dl = _extract_download_target(command)
+    chmod = _extract_chmod_exec_target(command)
+    execd = _extract_exec_target(command)
+
+    dl_paths = {e["path"] for e in state["downloads"]}
+    prep_paths = {e["path"] for e in state["prepared"]}
+    chain = None
+
+    if execd:
+        if execd in prep_paths:
+            chain = f"download → chmod +x → execute chain on {execd}"
+        elif execd in dl_paths:
+            # download → direct interpreter execute (no chmod)
+            chain = f"download → interpreter execute chain on {execd}"
+
+    if chmod and chmod in dl_paths and chmod not in prep_paths:
+        state["prepared"].append({"path": chmod, "ts": now})
+
+    if dl and dl not in dl_paths:
+        state["downloads"].append({"path": dl, "ts": now})
+
+    _save_chain_state(session_id, state)
+    return chain
+
+
+# -----------------------------------------------------------------------------
 # Injection defender (PostToolUse hook)
 # -----------------------------------------------------------------------------
 # Scans the tool's output for common prompt-injection markers — text that
@@ -1448,7 +1611,28 @@ def main() -> None:
             _emit_catastrophic_intercept(catastrophic, raw_cmd, event_name)
             return
 
+    # Session-scoped chain tracker — records downloads / chmod +x and
+    # surfaces a dialog if a download → chmod → execute chain closes on
+    # the same file within a session. Only for Bash PreToolUse.
+    chain_desc = None
+    if event_name == "PreToolUse" and tool_name == "Bash":
+        raw_cmd = str(tool_input.get("command") or "")
+        sid = _session_id_from_payload(payload)
+        if sid:
+            _cleanup_old_chain_states()
+            chain_desc = _chain_check_and_record(sid, raw_cmd)
+            if chain_desc:
+                log_event({"phase": "chain_detected", "session": sid,
+                           "chain": chain_desc})
+
     desc, danger = describe(tool_name, tool_input)
+    # Chain closure escalates risk — even if the individual command alone
+    # would be low, the sequence is high: download+chmod+exec of an
+    # internet-fetched file is a classic compromise pattern.
+    if chain_desc:
+        desc = f"{chain_desc} (step is: {desc})"
+        if _RANK.get(danger, -1) < _RANK["high"]:
+            danger = "high"
 
     log_event({
         "phase": "classified",
