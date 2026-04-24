@@ -1092,24 +1092,65 @@ def _is_critical_write(path: str, cfg: dict) -> bool:
     return False
 
 
+def _resolve_for_boundary(path: str) -> str:
+    """Resolve symlinks/junctions on any part of the path. For a target
+    whose leaf doesn't exist yet (typical for Write creating a new file),
+    walk up to the first existing ancestor, realpath THAT, then re-attach
+    the trailing basename(s). This blocks the bypass where a symlinked
+    parent inside the project points outside — e.g. `<project>/scratch -> ~/.config`
+    and the agent Writes to `<project>/scratch/foo.env`."""
+    p = os.path.abspath(path)
+    if os.path.lexists(p):
+        try:
+            return os.path.realpath(p)
+        except Exception:
+            return p
+    parent = p
+    tail: list[str] = []
+    while parent:
+        nxt = os.path.dirname(parent)
+        if nxt == parent or os.path.lexists(parent):
+            break
+        tail.append(os.path.basename(parent))
+        parent = nxt
+    if parent and os.path.lexists(parent):
+        try:
+            parent = os.path.realpath(parent)
+        except Exception:
+            pass
+    resolved = parent
+    for t in reversed(tail):
+        resolved = os.path.join(resolved, t)
+    return resolved
+
+
 def _is_outside_project(path: str) -> bool:
-    """True when the write target is demonstrably outside the session-stable
-    project root. Temp-scratch paths (/tmp, /var/tmp, AppData/Local/Temp)
-    are whitelisted — agents routinely write short-lived artefacts there.
+    """True when the write target (after resolving symlinks/junctions on
+    existing ancestors) is demonstrably outside the session-stable project
+    root. Temp-scratch paths (/tmp, /var/tmp, AppData/Local/Temp) are
+    whitelisted — agents routinely write short-lived artefacts there.
     When CLAUDE_PROJECT_DIR is unset we return False (cannot decide;
     graceful degradation — other classifier layers still apply)."""
     pd = _project_dir()
     if not pd or not path:
         return False
     try:
-        abs_path = os.path.abspath(path)
+        target = _resolve_for_boundary(path)
+        root = _resolve_for_boundary(pd)
     except Exception:
         return False
-    norm = abs_path.replace("\\", "/")
-    proj = os.path.abspath(pd).replace("\\", "/").rstrip("/")
-    if norm.lower().startswith(proj.lower() + "/") or norm.lower() == proj.lower():
+    # Case-insensitive path compare on Windows; POSIX stays case-sensitive.
+    norm_target = os.path.normcase(target)
+    norm_root = os.path.normcase(root).rstrip(os.sep).rstrip("/")
+    try:
+        common = os.path.commonpath([norm_root, norm_target])
+    except ValueError:
+        # commonpath raises on different drives on Windows; different drive = outside.
+        return True
+    if common == norm_root:
         return False
-    lower = norm.lower()
+    # Whitelist temp / scratch locations by the RESOLVED target path.
+    lower = target.replace("\\", "/").lower()
     whitelist = [
         "/tmp/", "/var/tmp/", "/private/tmp/",
         os.path.expanduser("~/AppData/Local/Temp/").replace("\\", "/").lower(),
