@@ -835,7 +835,36 @@ Allow ("yes") when — check these FIRST, before deny rules:
 5) kill/pkill for development processes: {dev_procs}
 
 6) INTERPRETER body only does read / output / arithmetic / imports without
-   destructive calls (length and complexity don't matter — a long read-only
+   destructive calls
+   ALWAYS ALLOW inline interpreter wrappers (python -c, py -c,
+   powershell -Command, pwsh -c, bash -c, sh -c, node -e, deno eval) when
+   the inline body contains ONLY:
+     file reads: open(path), open(path,'r'), open(path,'rb'), Get-Content,
+                 pathlib.Path.read_text/read_bytes, json.load, csv reader
+     sqlite3:    sqlite3.connect(...) + SELECT-only queries (no INSERT/UPDATE/DELETE/DROP)
+     string ops: re.search/match/findall/finditer/sub on local strings, str.* methods
+     output:     print(...), sys.stdout.write, Write-Host, Write-Output
+     safe stdlib: re, os.path, sys, json, csv, html, pathlib, collections,
+                  datetime, sqlite3 (read-only), itertools, statistics
+   And does NOT contain:
+     open(...,'w'/'a'/'x'/'+'), os.remove/unlink/rmdir/rename, shutil.rmtree/move/copy,
+     subprocess.run/Popen, os.system, os.popen, eval(, exec(, compile(,
+     requests.post/put/delete, urllib downloads writing to disk,
+     SQL INSERT/UPDATE/DELETE/DROP/CREATE/ALTER
+   Note: Deny rules always take priority over this block. If the inline body reads
+   a user secret (~/.ssh/, ~/.aws/, API key files) or deletes, moves, or overwrites
+   a critical artefact, classify as ASK regardless of the conditions above.
+
+   EXAMPLE (MUST be allowed):
+     python -c "import json; entries=[json.loads(l) for l in open('log.jsonl')];
+     print(len(entries))"
+     — reads a JSON-lines file and prints count. No writes, no network → ALLOW.
+
+   EXAMPLE (MUST be denied):
+     python -c "import sqlite3; sqlite3.connect('a.db').execute('UPDATE t SET ...')"
+     — SQL UPDATE is destructive → DENY.
+
+   (length and complexity don't matter — a long read-only
    pipeline is still read-only):
    - print(...), echo, Write-Host, Write-Output
    - Get-* cmdlets including Get-Content, Get-ChildItem, Get-Process, Get-WmiObject,
