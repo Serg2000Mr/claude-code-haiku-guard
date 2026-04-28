@@ -2,6 +2,22 @@
 
 All notable user-visible changes live here. For the full commit history see `git log`.
 
+## 2026-04-28
+
+### Fewer false positives for inline interpreter wrappers
+
+- Added explicit `ALWAYS ALLOW` block to rule 6 of the Haiku decision prompt for
+  `python -c`, `py -c`, `powershell -Command`, `pwsh -c`, `bash -c`, `sh -c`,
+  `node -e`, `deno eval` — when the inline body contains only file reads, sqlite3
+  SELECT queries, string operations, safe stdlib imports, and output.
+- Includes two concrete examples the model must honour (one must-allow, one must-deny)
+  so Haiku stops classifying read-only `python -c` as arbitrary code requiring manual
+  confirmation.
+- Deny rules retain priority: user-secret reads (`~/.ssh/`, `~/.aws/`, API key files)
+  and destructive artefact operations still require confirmation.
+- `python script.py` and "referenced script" intentionally excluded — Haiku does not
+  receive the script body, so safety cannot be verified from the command string alone.
+
 ## 2026-04-22
 
 ### Session-scoped chain tracker
