@@ -81,6 +81,14 @@ python test_interpreter_destructive.py
 - Широкие Bash-правила в настройках Claude сводят пользу этого хука почти к нулю, поэтому их лучше убрать и из глобальных, и из проектных настроек.
 - Кэш привязан к полной команде и `cwd`, поэтому та же команда в другой директории будет оценена заново.
 
+## 🔗 Похожие проекты
+
+- [dwarvesf/claude-guardrails](https://github.com/dwarvesf/claude-guardrails) — guardrails для Claude Code через хуки
+- [lasso-security/claude-hooks](https://github.com/lasso-security/claude-hooks) — набор security-хуков от Lasso Security
+- [disler/claude-code-hooks-multi-agent-observability](https://github.com/disler/claude-code-hooks-multi-agent-observability) — наблюдаемость мульти-агентных систем через хуки
+- [shaominngqing/bark-claude-code-hook](https://github.com/shaominngqing/bark-claude-code-hook) — голосовые уведомления через Bark
+- [chainguard-dev/multiclaude](https://github.com/chainguard-dev/multiclaude) — обёртка Chainguard вокруг Claude Code
+
 ## Лицензия
 
 MIT

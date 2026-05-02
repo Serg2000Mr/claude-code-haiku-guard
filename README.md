@@ -81,6 +81,14 @@ python test_interpreter_destructive.py
 - Broad Bash allow rules in Claude settings still defeat the point of this guard, so keep them out of both global and project settings.
 - Cache entries are scoped to the full command and `cwd`, so the same command in another directory is evaluated again.
 
+## 🔗 Related projects
+
+- [dwarvesf/claude-guardrails](https://github.com/dwarvesf/claude-guardrails) — guardrails for Claude Code via hooks
+- [lasso-security/claude-hooks](https://github.com/lasso-security/claude-hooks) — security hooks pack from Lasso Security
+- [disler/claude-code-hooks-multi-agent-observability](https://github.com/disler/claude-code-hooks-multi-agent-observability) — multi-agent observability via hooks
+- [shaominngqing/bark-claude-code-hook](https://github.com/shaominngqing/bark-claude-code-hook) — Bark-based voice notifications hook
+- [chainguard-dev/multiclaude](https://github.com/chainguard-dev/multiclaude) — Chainguard wrapper around Claude Code
+
 ## License
 
 MIT
