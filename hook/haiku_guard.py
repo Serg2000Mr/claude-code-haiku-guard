@@ -909,7 +909,7 @@ Deny ("no") when:
 When in doubt, deny. The user can still approve via the dialog.
 
 FORMAT: strict JSON on a single line, no code fences:
-{"verdict":"yes|no","reason":"short phrase, <60 chars"}"""
+{{"verdict":"yes|no","reason":"short phrase, <60 chars"}}"""
 
 
 def _parse_verdict_json(text: str) -> tuple[bool, str]:

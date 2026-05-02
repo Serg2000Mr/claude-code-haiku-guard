@@ -57,7 +57,7 @@ print(f"{'Status':<4} {'Exp':<6} {'Actual':<6} {'Command':<70}")
 print("-" * 110)
 fail = 0
 for cmd, desc, danger, expected in CASES:
-    verdict = ask_haiku("Bash", {"command": cmd}, desc, danger)
+    verdict, _ = ask_haiku("Bash", {"command": cmd}, desc, danger)
     status = "ok" if verdict == expected else "FAIL"
     if status == "FAIL":
         fail += 1
