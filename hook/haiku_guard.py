@@ -913,23 +913,27 @@ FORMAT: strict JSON on a single line, no code fences:
 
 
 def _parse_verdict_json(text: str) -> tuple[bool, str]:
-    """Parse LLM answer: strict JSON first, fallback to 'yes'/'no' keyword."""
+    """Parse LLM answer: extract first JSON object even if wrapped in markdown
+    fences or followed by prose reasoning. Falls back to 'yes'/'no' keyword."""
     t = (text or "").strip()
-    # strip optional code fences
-    if t.startswith("```"):
-        t = t.strip("`")
-        if t.startswith("json"):
-            t = t[4:]
-        t = t.strip()
-    try:
-        obj = json.loads(t)
-        v = str(obj.get("verdict", "")).strip().lower()
-        reason = str(obj.get("reason", "") or "")[:120]
-        return (v == "yes", reason)
-    except Exception:
-        # legacy single-word answer
-        low = t.lower()
-        return (low.startswith("yes"), "")
+    # Locate first '{' anywhere in the response. Skips prose preambles, ```json
+    # fences, and stray characters. raw_decode() parses one JSON object and
+    # returns the index where parsing stopped — anything after is discarded,
+    # so trailing reasoning text outside the JSON does not break the parse.
+    brace = t.find('{')
+    if brace >= 0:
+        try:
+            obj, _ = json.JSONDecoder().raw_decode(t[brace:])
+            if isinstance(obj, dict):
+                v = str(obj.get("verdict", "")).strip().lower()
+                reason = str(obj.get("reason", "") or "")[:120]
+                if v in ("yes", "no"):
+                    return (v == "yes", reason)
+        except Exception:
+            pass
+    # Legacy single-word answer
+    low = t.lower()
+    return (low.startswith("yes"), "")
 
 
 def _run_custom_verifier(cmd_path: str, payload: dict) -> tuple[bool, str] | None:
