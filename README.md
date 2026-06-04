@@ -1,5 +1,11 @@
 # 🛡️ claude-code-haiku-guard
 
+> ## ⚠️ Superseded by Auto Mode
+>
+> Claude Code's native [Auto Mode](https://code.claude.com/docs/en/permission-modes) (`"defaultMode": "auto"`) now performs the same job — model-side safety checks that auto-approve commands aligned with the user's request, surfacing only the ones that need human judgment. Codex shipped an equivalent native classifier.
+>
+> If you've adopted Auto Mode, this hook is largely redundant — you'll be paying for two classifiers (Anthropic's internal one + OpenRouter Haiku) and they can disagree on edge cases. The repo stays available for users who prefer explicit rule-based gating with a custom config and audit log, but new features are no longer planned.
+
 Anyone who uses Claude Code heavily eventually gets tired of approving harmless commands. Most people start by adding allow-list exceptions, and some end up switching on `--dangerously-skip-permissions`. The incident reports linked below are a good reminder of why that trade-off is risky.
 
 The idea in this repo is simple: keep rules for obviously safe commands, and use a small, fast model such as Haiku for the harder cases. In practice, that means most routine commands are approved automatically, while the user only sees the commands that look dangerous or unclear.

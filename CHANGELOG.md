@@ -2,6 +2,19 @@
 
 All notable user-visible changes live here. For the full commit history see `git log`.
 
+## 2026-06-04
+
+### Maintenance mode — superseded by Auto Mode
+
+Claude Code's native [Auto Mode](https://code.claude.com/docs/en/permission-modes)
+(`"defaultMode": "auto"`) now performs the same model-side classification this hook
+was built for, with Codex shipping an equivalent feature. The repo enters maintenance
+mode — bugfix-only, no new features. Deprecation notice added to both READMEs.
+
+If you're on Auto Mode, you're likely paying for two classifiers in parallel (Anthropic
+internal + OpenRouter Haiku) that can disagree on edge cases. Consider removing the
+`PreToolUse` Bash entry from your `settings.json` and relying on Auto Mode alone.
+
 ## 2026-04-28
 
 ### Fewer false positives for inline interpreter wrappers
